@@ -1,0 +1,74 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+dist
+dist-ssr
+*.local
+.env
+.env.*
+!.env.example
+
+# Build bundles (temporary)
+release_bundle/
+release_server_fix/
+release-dist-*/
+.dist-prev-*/
+server/sqlite.db
+dogfood-output/
+verification/
+tmp/
+.playwright-cli/
+
+# Local browser captures and generated test workbooks
+/*.png
+docs/test-cases-2026-08-15.xlsx
+/*_20260815.xlsx
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+.worktrees/
+.gstack/
+
+# Local agent, editor, and browser state
+.workbuddy/
+.codebuddy/
+.trae/
+.superpowers/
+.agent-browser-home/
+*.ref/
+
+# Local verification output and diagnostic scripts
+docs/*.docx
+docs/*.xlsx
+server/src/scripts/
+server/scripts/
+test-sign-bug.js
+validate-workbench-follower-report.md
+
+# Historical reports, product drafts, and browser fixture captures
+docs/
+mobile/
+/*.yaml
+!/pnpm-lock.yaml
+batch.json
+test-report-*.md
+tmp_*.applescript
+scripts/gen_test_excel.py
+scripts/verify-login.mjs
+scripts/playwright-login.mjs
+scripts/verify-timeline-pagination.cjs

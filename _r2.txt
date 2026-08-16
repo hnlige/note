@@ -1,0 +1,6 @@
+src/routes/auth.middleware.test.ts                 pass=3 fail=0
+src/routes/auth.password.test.ts                   pass=2 fail=0
+src/routes/auth.session.test.ts                    pass=6 fail=0
+src/routes/item-workflow.test.ts                   pass=6 fail=0
+src/routes/items.backfill.test.ts                  pass=3 fail=0
+src/routes/items.policy.test.ts                    pass=26 fail=0

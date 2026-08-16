@@ -1,0 +1,13 @@
+node_modules
+server/node_modules
+server/dist
+.git
+.codebuddy
+.DS_Store
+*.log
+dogfood-output
+tmp
+verification
+*.png
+*.yaml
+*.md

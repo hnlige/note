@@ -1,0 +1,13 @@
+{
+  "version": "7",
+  "dialect": "mysql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "5",
+      "when": 1781875346119,
+      "tag": "0000_groovy_forgotten_one",
+      "breakpoints": true
+    }
+  ]
+}
