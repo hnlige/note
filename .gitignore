@@ -57,12 +57,14 @@ docs/*.docx
 docs/*.xlsx
 server/src/scripts/
 server/scripts/
+_r*.txt
+_testfiles.txt
 test-sign-bug.js
 validate-workbench-follower-report.md
 
 # Historical reports, product drafts, and browser fixture captures
 docs/
-mobile/
+/mobile/
 /*.yaml
 !/pnpm-lock.yaml
 batch.json

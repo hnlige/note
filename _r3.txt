@@ -1,6 +1,0 @@
-src/routes/items.route-auth.test.ts                pass=4 fail=0
-src/routes/logs.test.ts                            pass=4 fail=0
-src/routes/messages.policy.test.ts                 pass=3 fail=0
-src/routes/module-authz.test.ts                    pass=20 fail=0
-src/routes/notification.schema.test.ts             pass=3 fail=0
-src/routes/role-identity.test.ts                   pass=4 fail=0
