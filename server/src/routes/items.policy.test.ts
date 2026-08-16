@@ -36,6 +36,20 @@ test('sanitizeItemUpdates keeps only the supported editable item fields', () => 
   });
 });
 
+test('sanitizeItemUpdates does not persist COS signed URLs', () => {
+  const result = sanitizeItemUpdates({
+    attachments: [
+      { id: 'cos-1', name: '资料.pdf', storageKey: 'duban/attachments/资料.pdf', url: 'https://signed.example/temporary' },
+      { id: 'legacy-1', name: '旧附件', url: 'data:text/plain;base64,b2xk' },
+    ],
+  }, new Date('2026-06-15T10:00:00.000Z'));
+
+  assert.deepEqual(result.attachments, [
+    { id: 'cos-1', name: '资料.pdf', storageKey: 'duban/attachments/资料.pdf' },
+    { id: 'legacy-1', name: '旧附件', url: 'data:text/plain;base64,b2xk' },
+  ]);
+});
+
 test('getInvalidItemUpdateFields reports unsupported persisted fields', () => {
   const invalidFields = getInvalidItemUpdateFields({
     timeline: [],

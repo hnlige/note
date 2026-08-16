@@ -32,6 +32,8 @@ export interface Attachment {
   id: string;
   name: string;
   url: string;
+  /** COS 对象键，仅服务端使用以生成短期签名下载地址。 */
+  storageKey?: string;
   size: string;
   type: string;
   uploadedAt?: string;

@@ -18,13 +18,16 @@ import { globalRulesRouter } from './routes/globalRules';
 import { logsRouter } from './routes/logs';
 import { wecomRouter } from './routes/wecom';
 import { reassignRouter } from './routes/reassign';
+import { attachmentsRouter } from './routes/attachments';
 import { requireAuth } from './routes/auth.middleware';
 import { getDb, closeDb } from './db';
+import { closeRedis, initializeRedis } from './redis';
 import { ensureDatabaseSchema } from './db/schema.ensure';
 import { getHealthPayload } from './health';
 import { cacheMiddleware } from './cache';
 import { configureTrustedProxy } from './trust-proxy';
 import { startItemAutoEngine } from './jobs/item-auto-engine';
+import { createRateLimitMiddleware } from './rate-limit';
 
 dotenv.config();
 
@@ -58,44 +61,17 @@ app.use((_req, res, next) => {
 // ── 速率限制 ──
 // 全局限制：每 IP 每分钟最多 600 请求（平均 10 req/s）
 const M = 60 * 1000;
-const requestCounts = new Map<string, { count: number; resetAt: number }>();
 const GLOBAL_RATE_LIMIT = Number(process.env.RATE_LIMIT_PER_MINUTE) || 600;
 
 // 本地回环地址白名单（开发环境 HMR 会产生大量请求）
 const LOCALHOST_IPS = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1', 'localhost']);
 const isDev = process.env.NODE_ENV !== 'production';
 
-app.use((req, res, next) => {
-  const ip = req.ip || req.socket.remoteAddress || 'unknown';
-
-  // 开发环境下本地回环地址不限流
-  if (isDev && LOCALHOST_IPS.has(ip)) {
-    return next();
-  }
-
-  const now = Date.now();
-  let entry = requestCounts.get(ip);
-
-  if (!entry || now > entry.resetAt) {
-    entry = { count: 0, resetAt: now + M };
-    requestCounts.set(ip, entry);
-  }
-
-  entry.count++;
-  if (entry.count > GLOBAL_RATE_LIMIT) {
-    return res.status(429).json({ error: '请求过于频繁，请稍后重试' });
-  }
-
-  next();
-});
-
-// 定期清理速率限制记录
-setInterval(() => {
-  const now = Date.now();
-  for (const [ip, entry] of requestCounts) {
-    if (now > entry.resetAt) requestCounts.delete(ip);
-  }
-}, 5 * M);
+app.use(createRateLimitMiddleware({
+  limit: GLOBAL_RATE_LIMIT,
+  windowMs: M,
+  skip: (req) => isDev && LOCALHOST_IPS.has(req.ip || req.socket.remoteAddress || ''),
+}));
 
 // ── 健康检查（不受限流影响） ──
 app.get('/health', (_req, res) => res.json(getHealthPayload()));
@@ -116,6 +92,7 @@ app.use('/api/dictionaries', requireAuth, cacheMiddleware('dictionaries', cacheT
 
 // 高频数据路由
 app.use('/api/items', requireAuth, itemsRouter);
+app.use('/api/attachments', requireAuth, attachmentsRouter);
 app.use('/api/messages', requireAuth, messagesRouter);
 app.use('/api/urge', requireAuth, urgeRouter);
 app.use('/api/users', requireAuth, usersRouter);
@@ -140,6 +117,10 @@ app.use((err: Error, _req: express.Request, res: express.Response, _next: expres
 // ── 启动服务 ──
 async function startServer() {
   const db = await getDb();
+  const redis = await initializeRedis();
+  if (process.env.REDIS_REQUIRED === 'true' && !redis) {
+    throw new Error('REDIS_REQUIRED=true but Redis is unavailable');
+  }
   await ensureDatabaseSchema(db);
   const stopAutoEngine = startItemAutoEngine(db);
 
@@ -154,6 +135,7 @@ async function startServer() {
       console.log('HTTP server closed');
     });
     stopAutoEngine();
+    await closeRedis();
     await closeDb();
     process.exit(0);
   };

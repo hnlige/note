@@ -1,4 +1,5 @@
 import { Router, Request, Response } from 'express';
+import { and, count, desc, eq, isNull, or, sql } from 'drizzle-orm';
 import { getDb } from '../db';
 import { AuthenticatedRequest } from './auth.middleware';
 import { getCurrentAccessContext } from './access.context';
@@ -10,7 +11,8 @@ import {
   isMessageVisibleToUser,
 } from './module-authz';
 import { ensureNotificationIdentityColumns } from './notification.schema';
-import { filterMessagesWithExistingItemLinks, getLinkedItemIds } from './messages.policy';
+import { getLinkedItemIds } from './messages.policy';
+import { buildPagination, getPageRequest } from './pagination';
 
 export const messagesRouter = Router();
 
@@ -31,41 +33,45 @@ messagesRouter.get('/', async (req: AuthenticatedRequest, res: Response) => {
   try {
     const db = await getDb();
     await ensureNotificationIdentityColumns(db);
-    const { items: itemsTable, messages: messagesTable, messageUserStates } = await import('../db/schema');
+    const { messages: messagesTable, messageUserStates } = await import('../db/schema');
     const accessContext = await getCurrentAccessContext(db, req.authUser?.id);
     if (!accessContext?.currentRole || !canReadMessages(accessContext.currentRole)) {
       return res.status(403).json({ error: '当前账号无消息访问权限' });
     }
 
-    const msgs = await db.select().from(messagesTable).orderBy(messagesTable.timestamp);
-    const linkedItemIds = getLinkedItemIds(msgs);
-    const existingItems = linkedItemIds.length > 0
-      ? await db
-          .select({ id: itemsTable.id })
-          .from(itemsTable)
-          .where((await import('drizzle-orm')).inArray(itemsTable.id, linkedItemIds))
-      : [];
-    const states = await db.select().from(messageUserStates)
-      .where((await import('drizzle-orm')).eq(messageUserStates.userId, accessContext.currentUser.id));
-    const statesByMessageId = new Map(states.map((state) => [state.messageId, state]));
-    const actionableMessages = filterMessagesWithExistingItemLinks(
-      msgs,
-      new Set(existingItems.map((item) => item.id)),
-    ).filter((message) => !statesByMessageId.get(message.id)?.deleted)
-      .map((message) => normalizeMessage({ ...message, read: statesByMessageId.get(message.id)?.read || false }));
-
-    if (hasGlobalModuleAccess(accessContext.currentRole)) {
-      return res.json(actionableMessages);
-    }
-
-    const visibleMessages = actionableMessages.filter((message) =>
-      isMessageVisibleToUser(message, {
-        id: accessContext.currentUser.id,
-        name: accessContext.currentUser.name,
-      }),
+    const page = getPageRequest(req.query as Record<string, unknown>);
+    const stateJoin = and(
+      eq(messageUserStates.messageId, messagesTable.id),
+      eq(messageUserStates.userId, accessContext.currentUser.id),
     );
+    // `receiver_name` is retained only for historical rows that predate receiver_id.
+    const recipientWhere = hasGlobalModuleAccess(accessContext.currentRole)
+      ? undefined
+      : or(
+        and(isNull(messagesTable.receiverId), isNull(messagesTable.receiverName)),
+        eq(messagesTable.receiverId, accessContext.currentUser.id),
+        and(isNull(messagesTable.receiverId), eq(messagesTable.receiverName, accessContext.currentUser.name)),
+      );
+    const visibleWhere = and(
+      recipientWhere,
+      or(isNull(messageUserStates.deleted), eq(messageUserStates.deleted, false)),
+      // Preserve the old contract: only exact /items/:id links are hidden after their item is deleted.
+      sql`(${messagesTable.link} IS NULL OR ${messagesTable.link} NOT REGEXP '^/items/[^/?#]+$' OR EXISTS (SELECT 1 FROM items WHERE items.id = SUBSTRING(${messagesTable.link}, 8)))`,
+    );
+    const [{ total }] = await db.select({ total: count() })
+      .from(messagesTable)
+      .leftJoin(messageUserStates, stateJoin)
+      .where(visibleWhere);
+    const rows = await db.select({ message: messagesTable, read: messageUserStates.read })
+      .from(messagesTable)
+      .leftJoin(messageUserStates, stateJoin)
+      .where(visibleWhere)
+      .orderBy(desc(messagesTable.timestamp), desc(messagesTable.id))
+      .limit(page.pageSize)
+      .offset((page.page - 1) * page.pageSize);
+    const data = rows.map((row) => normalizeMessage({ ...row.message, read: row.read || false }));
 
-    return res.json(visibleMessages);
+    return res.json({ data, pagination: buildPagination(page, Number(total || 0)) });
   } catch (error) {
     console.error('Get messages error:', error);
     return res.status(500).json({ error: '获取消息失败' });

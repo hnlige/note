@@ -50,6 +50,9 @@ describe('deployment scripts', () => {
   test('local deploy script runs rsync and ssh directly', () => {
     assert.match(deployLocalScript, /rsync -az/);
     assert.match(deployLocalScript, /SSH_KEY="\$\{SSH_KEY:-\}"/);
+    assert.match(deployLocalScript, /SERVER_INBOX="\$\{SERVER_INBOX:-\/opt\/duban\/incoming\}"/);
+    assert.match(deployLocalScript, /\$\{SERVER_INBOX\}\/frontend\//);
+    assert.match(deployLocalScript, /\$\{SERVER_INBOX\}\/backend\//);
     assert.match(deployLocalScript, /ssh "\$\{SSH_ARGS\[@\]\}" "\$\{REMOTE_TARGET\}"/);
     assert.doesNotMatch(deployLocalScript, /sc[pe]\s+-r\s+dist\/\s+\$\{SERVER_USER\}@\$\{SERVER_IP\}/);
   });
@@ -70,15 +73,15 @@ describe('deployment scripts', () => {
   test('server deploy writes a unique release fingerprint before updating either runtime', () => {
     assert.match(deployServerScript, /EXPECTED_RELEASE_ID=.*randomBytes/);
 
-    const releaseWriteIndex = deployServerScript.indexOf('> "$REPO_DIR/server/dist/release-id.txt"');
-    const backendCopyIndex = deployServerScript.indexOf('cp -r "$REPO_DIR/server/dist/"* "$BACKEND_TARGET/"');
+    const releaseWriteIndex = deployServerScript.indexOf('> "$BACKEND_RELEASE_DIR/release-id.txt"');
+    const backendCopyIndex = deployServerScript.indexOf('cp -r "$BACKEND_SOURCE_DIR/"* "$BACKEND_TARGET/"');
     const hostReloadIndex = deployServerScript.indexOf(
-      'if run_host_pm2 "$HOST_RUNTIME_ENV_FILE" "$HOST_RUNTIME_ID" reload duban-server --update-env',
+      'if run_host_pm2 "$HOST_RUNTIME_ENV_FILE" "$HOST_RUNTIME_ID" startOrReload ecosystem.config.js --update-env',
     );
     const containerCopyIndex = deployServerScript.indexOf(
-      'docker cp "$REPO_DIR/server/dist/." "$APP_CONTAINER:/app/server/dist/"',
+      'docker cp "$BACKEND_SOURCE_DIR/." "$APP_CONTAINER:/app/server/dist/"',
     );
-    const containerReloadIndex = deployServerScript.indexOf('pm2 reload duban-server --update-env');
+    const containerReloadIndex = deployServerScript.indexOf('pm2 startOrReload /app/server/ecosystem.config.js --update-env');
 
     assert.ok(releaseWriteIndex >= 0 && releaseWriteIndex < backendCopyIndex);
     assert.ok(releaseWriteIndex < hostReloadIndex);
@@ -91,12 +94,12 @@ describe('deployment scripts', () => {
     assert.match(deployServerScript, /container_runtime_updated=0/);
     assert.match(
       deployServerScript,
-      /if run_host_pm2 "\$HOST_RUNTIME_ENV_FILE" "\$HOST_RUNTIME_ID" reload duban-server --update-env[\s\S]*?host_runtime_updated=1[\s\S]*?else[\s\S]*?if run_host_pm2 "\$HOST_RUNTIME_ENV_FILE" "\$HOST_RUNTIME_ID" start ecosystem\.config\.js --update-env[\s\S]*?host_runtime_updated=1/,
+      /if run_host_pm2 "\$HOST_RUNTIME_ENV_FILE" "\$HOST_RUNTIME_ID" startOrReload ecosystem\.config\.js --update-env[\s\S]*?host_runtime_updated=1[\s\S]*?else[\s\S]*?if run_host_pm2 "\$HOST_RUNTIME_ENV_FILE" "\$HOST_RUNTIME_ID" start ecosystem\.config\.js --update-env[\s\S]*?host_runtime_updated=1/,
     );
     assert.doesNotMatch(deployServerScript, /run_host_pm2[^\n]*start ecosystem\.config\.js[^\n]*\|\|/);
     assert.match(
       deployServerScript,
-      /if docker exec[\s\S]*?-e DEPLOY_RUNTIME_ID="\$CONTAINER_RUNTIME_ID"[\s\S]*?pm2 reload duban-server --update-env[\s\S]*?container_runtime_updated=1/,
+      /if docker exec[\s\S]*?-e DEPLOY_RUNTIME_ID="\$CONTAINER_RUNTIME_ID"[\s\S]*?pm2 startOrReload \/app\/server\/ecosystem\.config\.js --update-env[\s\S]*?container_runtime_updated=1/,
     );
 
     const runtimeFailureGate = deployServerScript.match(
@@ -281,7 +284,7 @@ test -z "$health_body"`,
     );
     assert.match(deployServerScript, /HOST_RUNTIME_ENV_FILE=.*resolve_host_runtime_env_file/);
     assert.match(deployServerScript, /DOTENV_CONFIG_OVERRIDE="true"/);
-    assert.match(deployServerScript, /reload duban-server --update-env/);
+    assert.match(deployServerScript, /startOrReload ecosystem\.config\.js --update-env/);
     assert.match(
       deployServerScript,
       /DOTENV_CONFIG_PATH="\$HOST_RUNTIME_ENV_FILE"[\s\S]*?node -r dotenv\/config[\s\S]*?deploy-role-refresh\.js/,
@@ -298,9 +301,9 @@ test -z "$health_body"`,
     const hostRuntimeFlagIndex = deployServerScript.indexOf('host_runtime_updated=0');
     const containerRuntimeFlagIndex = deployServerScript.indexOf('container_runtime_updated=0');
     const hostReloadIndex = deployServerScript.indexOf(
-      'if run_host_pm2 "$HOST_RUNTIME_ENV_FILE" "$HOST_RUNTIME_ID" reload duban-server --update-env',
+      'if run_host_pm2 "$HOST_RUNTIME_ENV_FILE" "$HOST_RUNTIME_ID" startOrReload ecosystem.config.js --update-env',
     );
-    const containerReloadIndex = deployServerScript.indexOf('pm2 reload duban-server --update-env');
+    const containerReloadIndex = deployServerScript.indexOf('pm2 startOrReload /app/server/ecosystem.config.js --update-env');
     const runtimeFailureGateIndex = deployServerScript.indexOf(
       'if [ "$host_runtime_updated" -ne 1 ] && [ "$container_runtime_updated" -ne 1 ]; then',
     );

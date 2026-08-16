@@ -306,12 +306,8 @@ const ItemDetail: React.FC = () => {
     setAttachments(item?.attachments || []);
   }, [item?.id, item?.attachments]);
 
-  const readFileAsDataUrl = (file: File) => new Promise<string>((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result || ''));
-    reader.onerror = () => reject(reader.error || new Error('读取附件失败'));
-    reader.readAsDataURL(file);
-  });
+  const uploadAttachments = (itemId: string, files: File[]) =>
+    Promise.all(files.map((file) => api.attachments.upload(itemId, file, itemPageAuth)));
 
   const getItemStatusUpdatesForCurrentOwner = (updates: Parameters<typeof updateUserSubTaskForIdentity>[2]) => {
     if (!item || !isOwner) return {};
@@ -335,14 +331,14 @@ const ItemDetail: React.FC = () => {
 
   const handleFeedbackAttachmentUpload = async (files: FileList | null) => {
     if (!item || !files?.length) return;
-    const uploadedAttachments = await Promise.all(Array.from(files).map(async (file) => ({
-      id: Math.random().toString(36).slice(2, 11),
-      name: file.name,
-      url: await readFileAsDataUrl(file),
-      size: (file.size / 1024).toFixed(1) + 'KB',
-      type: file.type || 'application/octet-stream',
-      uploadedAt: new Date().toISOString().split('T')[0],
-    })));
+    let uploadedAttachments: Attachment[];
+    try {
+      uploadedAttachments = await uploadAttachments(item.id, Array.from(files));
+    } catch (error) {
+      console.error('Upload feedback attachments error:', error);
+      showToast('附件上传失败，请稍后重试', 'error');
+      return;
+    }
     const isFollowerFeedback = isFollower && !isOwner;
     const newNode = {
       id: 't' + Date.now(),
@@ -369,14 +365,14 @@ const ItemDetail: React.FC = () => {
 
   const handleFeedback = async () => {
     if (!item || !feedbackText.trim()) return;
-    const feedbackAttachments = await Promise.all(feedbackFiles.map(async (file) => ({
-      id: Math.random().toString(36).slice(2, 11),
-      name: file.name,
-      url: await readFileAsDataUrl(file),
-      size: (file.size / 1024).toFixed(1) + 'KB',
-      type: file.type || 'application/octet-stream',
-      uploadedAt: new Date().toISOString().split('T')[0],
-    })));
+    let feedbackAttachments: Attachment[];
+    try {
+      feedbackAttachments = await uploadAttachments(item.id, feedbackFiles);
+    } catch (error) {
+      console.error('Upload feedback attachments error:', error);
+      showToast('附件上传失败，请稍后重试', 'error');
+      return;
+    }
     const isFollowerFeedback = isFollower && !isOwner;
     const newNode = {
       id: 't' + Date.now(),

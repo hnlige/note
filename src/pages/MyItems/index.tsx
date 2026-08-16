@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { MainLayout } from '../../components/Layout/MainLayout';
 import { useStore } from '../../store/useStore';
 import { useToast } from '../../components/Common/Toast';
+import { api } from '../../lib/api';
 import { 
   ClipboardList, 
   CheckSquare, 
@@ -47,13 +48,6 @@ const MyItems: React.FC = () => {
     () => canUseAllowedAction(currentUser, roles, 'EDIT_ITEM') || canUseAllowedAction(currentUser, roles, 'FEEDBACK_ITEM'),
     [currentUser, roles],
   );
-
-  const readFileAsDataUrl = (file: File) => new Promise<string>((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result || ''));
-    reader.onerror = () => reject(reader.error || new Error('读取附件失败'));
-    reader.readAsDataURL(file);
-  });
 
   const resetFeedbackDrawer = () => {
     setFeedbackDrawer({ open: false, itemId: '', itemTitle: '' });
@@ -209,14 +203,16 @@ const MyItems: React.FC = () => {
     const currentStatus = item.status || 'PENDING';
     // 如果当前是 PENDING，则变为 EXECUTING；否则保持当前状态
     const newStatus = currentStatus === 'PENDING' ? 'EXECUTING' : currentStatus;
-    const feedbackAttachments = await Promise.all(feedbackFiles.map(async (file) => ({
-      id: Math.random().toString(36).slice(2, 11),
-      name: file.name,
-      url: await readFileAsDataUrl(file),
-      size: (file.size / 1024).toFixed(1) + 'KB',
-      type: file.type || 'application/octet-stream',
-      uploadedAt: new Date().toISOString().split('T')[0],
-    })));
+    let feedbackAttachments;
+    try {
+      feedbackAttachments = await Promise.all(
+        feedbackFiles.map((file) => api.attachments.upload(item.id, file, 'MENU_MY_ITEMS')),
+      );
+    } catch (error) {
+      console.error('Upload feedback attachments error:', error);
+      showToast('附件上传失败，请稍后重试', 'error');
+      return;
+    }
     const effectiveOwnerStatus = getEffectiveStatusForUser(item, currentUser.id);
     const subTaskUpdates = updateUserSubTask(item, currentUser.id, {
       status: effectiveOwnerStatus === 'PENDING' ? 'EXECUTING' : effectiveOwnerStatus,

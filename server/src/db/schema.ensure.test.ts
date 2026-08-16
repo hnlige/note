@@ -24,6 +24,10 @@ test('getDatabaseSchemaAlterStatements includes the persisted sub task column', 
 test('getDatabaseSchemaFixStatements includes list and automatic-engine indexes', () => {
   const statements = getDatabaseSchemaFixStatements();
   assert.ok(statements.includes('CREATE INDEX items_created_at_id_idx ON items (created_at, id)'));
+  assert.ok(statements.includes('CREATE INDEX messages_receiver_timestamp_id_idx ON messages (receiver_id, timestamp, id)'));
+  assert.ok(statements.includes('CREATE INDEX activities_timestamp_id_idx ON activities (timestamp, id)'));
+  assert.ok(statements.includes('CREATE INDEX audit_records_submitted_at_id_idx ON audit_records (submitted_at, id)'));
+  assert.ok(statements.includes('CREATE INDEX operation_logs_timestamp_id_idx ON operation_logs (timestamp, id)'));
   assert.ok(statements.includes('CREATE INDEX timeline_nodes_item_timestamp_idx ON timeline_nodes (item_id, timestamp, id)'));
   assert.ok(statements.includes('CREATE INDEX urge_records_auto_lookup_idx ON urge_records (item_id, receiver_id, sender_id, timestamp)'));
   assert.ok(statements.includes('CREATE INDEX urge_records_batch_item_receiver_idx ON urge_records (batch_id, item_id, receiver_id, sub_task_id)'));

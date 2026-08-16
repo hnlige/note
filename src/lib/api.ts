@@ -88,6 +88,28 @@ async function request<T>(url: string, options?: RequestInit): Promise<T> {
   return res.json();
 }
 
+async function uploadBinary<T>(url: string, file: File, pageAuth?: ItemPageAuth): Promise<T> {
+  const res = await fetch(`${BASE_URL}${url}`, {
+    method: 'POST',
+    body: file,
+    headers: {
+      ...getAuthHeaders(),
+      'Content-Type': 'application/octet-stream',
+      'X-Duban-File-Name': encodeURIComponent(file.name),
+      'X-Duban-File-Type': file.type || 'application/octet-stream',
+      ...(pageAuth ? { 'X-Page-Auth': pageAuth } : {}),
+    },
+  });
+  persistRenewedAuthToken(res);
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: res.statusText }));
+    const error = new Error(err.error || `附件上传失败 (${res.status})`) as Error & { status?: number };
+    error.status = res.status;
+    throw error;
+  }
+  return res.json();
+}
+
 function withPageAuth(pageAuth?: ItemPageAuth): Pick<RequestInit, 'headers'> {
   return pageAuth ? { headers: { 'X-Page-Auth': pageAuth } } : {};
 }
@@ -134,9 +156,19 @@ export const api = {
       request(`/items/${id}`, { method: 'DELETE', ...withPageAuth(pageAuth) }),
   },
 
+  attachments: {
+    upload: (itemId: string, file: File, pageAuth?: ItemPageAuth) =>
+      uploadBinary<{ id: string; name: string; url: string; storageKey: string; size: string; type: string; uploadedAt: string }>(
+        `/attachments/items/${encodeURIComponent(itemId)}`,
+        file,
+        pageAuth,
+      ),
+  },
+
   // ─── Messages ───
   messages: {
-    list: () => request<any[]>('/messages'),
+    listPage: (page = 1, pageSize = 100) => request<{ data: any[]; pagination: { page: number; pageSize: number; total: number; totalPages: number } }>(`/messages?page=${page}&pageSize=${pageSize}`),
+    list: async () => (await api.messages.listPage()).data,
     markRead: (id: string) =>
       request(`/messages/${id}/read`, { method: 'PUT' }),
     create: (data: any) =>
@@ -148,7 +180,8 @@ export const api = {
   },
   // ─── Activities ───
   activities: {
-    list: () => request<any[]>('/activities'),
+    listPage: (page = 1, pageSize = 100) => request<{ data: any[]; pagination: { page: number; pageSize: number; total: number; totalPages: number } }>(`/activities?page=${page}&pageSize=${pageSize}`),
+    list: async () => (await api.activities.listPage()).data,
     create: (data: any) =>
       request('/activities', { method: 'POST', body: JSON.stringify(data) }),
   },
@@ -262,7 +295,8 @@ export const api = {
 
   // ─── Audit Records ───
   audit: {
-    list: () => request<any[]>('/audit'),
+    listPage: (page = 1, pageSize = 100) => request<{ data: any[]; pagination: { page: number; pageSize: number; total: number; totalPages: number } }>(`/audit?page=${page}&pageSize=${pageSize}`),
+    list: async () => (await api.audit.listPage()).data,
     create: (data: any) =>
       request('/audit', { method: 'POST', body: JSON.stringify(data) }),
     update: (id: string, data: any) =>
@@ -291,7 +325,8 @@ export const api = {
 
   // ─── Operation Log ───
   logs: {
-    list: (limit?: number) => request<any[]>(`/logs${limit ? `?limit=${limit}` : ''}`),
+    listPage: (page = 1, pageSize = 200) => request<{ data: any[]; pagination: { page: number; pageSize: number; total: number; totalPages: number } }>(`/logs?page=${page}&pageSize=${pageSize}`),
+    list: async (limit?: number) => (await api.logs.listPage(1, limit || 200)).data,
     create: (data: Pick<OperationLog, 'action' | 'module'> & { detail?: string }) =>
       request<{ success: true; log: OperationLog }>('/logs', { method: 'POST', body: JSON.stringify(data) }),
   },

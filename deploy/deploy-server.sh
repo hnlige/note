@@ -5,15 +5,35 @@
 # ============================================
 set -e
 
-REPO_DIR="/root/duban"
+REPO_DIR="${REPO_DIR:-/root/duban}"
 REPO_URL="https://github.com/hnlige/note.git"
-FRONTEND_TARGET="/var/www/duban/dist"
-BACKEND_TARGET="/opt/duban/server/dist"
+RUNTIME_ROOT="${RUNTIME_ROOT:-/opt/duban}"
+INCOMING_DIR="${INCOMING_DIR:-$RUNTIME_ROOT/incoming}"
+FRONTEND_ROOT="${FRONTEND_ROOT:-/var/www/duban}"
+FRONTEND_TARGET="${FRONTEND_TARGET:-$FRONTEND_ROOT/dist}"
+BACKEND_RUNTIME_DIR="${BACKEND_RUNTIME_DIR:-$RUNTIME_ROOT/server}"
+BACKEND_TARGET="${BACKEND_TARGET:-$BACKEND_RUNTIME_DIR/dist}"
+RELEASES_DIR="${RELEASES_DIR:-$RUNTIME_ROOT/releases}"
 APP_CONTAINER="${APP_CONTAINER:-duban-app}"
-LOG_FILE="$REPO_DIR/deploy.log"
+LOG_DIR="${LOG_DIR:-/var/log/duban}"
+LOG_FILE="${LOG_FILE:-$LOG_DIR/deploy.log}"
 PM2="/usr/local/lib/node_modules/pm2/bin/pm2"
 SKIP_GIT_SYNC="${SKIP_GIT_SYNC:-0}"
 DEPLOY_SERVER_LIB="$REPO_DIR/deploy/deploy-server-lib.sh"
+
+mkdir -p "$LOG_DIR" "$INCOMING_DIR" "$RELEASES_DIR" "$BACKEND_RUNTIME_DIR" "$FRONTEND_ROOT"
+
+# 新流程从运行时收件目录读取构建产物；旧主机尚未切换时回退到仓库内产物。
+if [ -d "$INCOMING_DIR/backend" ] && [ -n "$(ls -A "$INCOMING_DIR/backend" 2>/dev/null)" ]; then
+    BACKEND_SOURCE_DIR="$INCOMING_DIR/backend"
+else
+    BACKEND_SOURCE_DIR="$REPO_DIR/server/dist"
+fi
+if [ -d "$INCOMING_DIR/frontend" ] && [ -n "$(ls -A "$INCOMING_DIR/frontend" 2>/dev/null)" ]; then
+    FRONTEND_SOURCE_DIR="$INCOMING_DIR/frontend"
+else
+    FRONTEND_SOURCE_DIR="$REPO_DIR/dist"
+fi
 
 if [ ! -f "$DEPLOY_SERVER_LIB" ]; then
     echo "[deploy] Missing deployment helper: $DEPLOY_SERVER_LIB" >&2
@@ -55,24 +75,27 @@ fi
 
 # 2. 使用已构建产物
 log "[2/7] 检查后端产物..."
-cd "$REPO_DIR/server"
-if [ ! -d "dist" ] || [ -z "$(ls -A dist 2>/dev/null)" ]; then
-    log "  ⚠ 缺少 server/dist，尝试使用现有 tsc 直接构建..."
-    if [ -x "./node_modules/.bin/tsc" ]; then
-        ./node_modules/.bin/tsc
+if [ ! -d "$BACKEND_SOURCE_DIR" ] || [ -z "$(ls -A "$BACKEND_SOURCE_DIR" 2>/dev/null)" ]; then
+    log "  ⚠ 缺少后端构建产物，尝试使用仓库内 tsc 直接构建..."
+    if [ -x "$REPO_DIR/server/node_modules/.bin/tsc" ]; then
+        (
+            cd "$REPO_DIR/server"
+            ./node_modules/.bin/tsc
+        )
+        BACKEND_SOURCE_DIR="$REPO_DIR/server/dist"
         log "  ✅ 后端已本地构建"
     else
-        log "  ❌ 缺少 server/dist，且未找到可用 tsc"
+        log "  ❌ 缺少后端构建产物，且未找到可用 tsc"
         exit 1
     fi
 fi
-log "  ✅ 已存在后端 dist 产物"
+log "  ✅ 已存在后端构建产物"
 
 get_database_target_id_from_env_file() {
     local host_env_file="$1"
 
     (
-        cd "$REPO_DIR/server"
+        cd "$BACKEND_RUNTIME_DIR"
         DOTENV_CONFIG_PATH="$host_env_file" \
             DOTENV_CONFIG_OVERRIDE="true" \
             node -r dotenv/config -e '
@@ -99,7 +122,7 @@ run_host_pm2() {
     shift 2
 
     (
-        cd "$REPO_DIR/server"
+        cd "$BACKEND_RUNTIME_DIR"
         DEPLOY_RUNTIME_ID="$runtime_id" \
             DOTENV_CONFIG_PATH="$host_env_file" \
             DOTENV_CONFIG_OVERRIDE="true" \
@@ -128,13 +151,13 @@ run_deploy_role_refresh() {
     fi
 
     (
-        cd "$REPO_DIR/server"
+        cd "$BACKEND_RUNTIME_DIR"
         EXPECTED_DATABASE_TARGET_ID="$expected_database_target_id" \
         EXPECTED_RUNTIME_ID="$expected_runtime_id" \
         DEPLOY_RUNTIME_ID="$expected_runtime_id" \
             DOTENV_CONFIG_PATH="$HOST_RUNTIME_ENV_FILE" \
             DOTENV_CONFIG_OVERRIDE="true" \
-            node -r dotenv/config "$REPO_DIR/server/dist/db/deploy-role-refresh.js"
+        node -r dotenv/config "$BACKEND_RUNTIME_DIR/dist/db/deploy-role-refresh.js"
     )
 }
 
@@ -218,22 +241,31 @@ log "[3/7] 生成后端发布指纹..."
 EXPECTED_RELEASE_ID="$(date -u '+%Y%m%dT%H%M%SZ')-$(node -e 'process.stdout.write(require("node:crypto").randomBytes(12).toString("hex"))')"
 HOST_RUNTIME_ID="${EXPECTED_RELEASE_ID}-host"
 CONTAINER_RUNTIME_ID="${EXPECTED_RELEASE_ID}-container"
-printf '%s\n' "$EXPECTED_RELEASE_ID" > "$REPO_DIR/server/dist/release-id.txt"
+RELEASE_DIR="$RELEASES_DIR/$EXPECTED_RELEASE_ID"
+BACKEND_RELEASE_DIR="$RELEASE_DIR/backend"
+FRONTEND_RELEASE_DIR="$RELEASE_DIR/frontend"
+mkdir -p "$BACKEND_RELEASE_DIR" "$FRONTEND_RELEASE_DIR"
+cp -r "$BACKEND_SOURCE_DIR/." "$BACKEND_RELEASE_DIR/"
+cp -r "$FRONTEND_SOURCE_DIR/." "$FRONTEND_RELEASE_DIR/"
+printf '%s\n' "$EXPECTED_RELEASE_ID" > "$BACKEND_RELEASE_DIR/release-id.txt"
+BACKEND_SOURCE_DIR="$BACKEND_RELEASE_DIR"
+FRONTEND_SOURCE_DIR="$FRONTEND_RELEASE_DIR"
 log "  ✅ 后端发布指纹已写入：$EXPECTED_RELEASE_ID"
 
 # 4. 部署后端 + 重启服务
 log "[4/7] 部署后端到 $BACKEND_TARGET..."
-mkdir -p "$BACKEND_TARGET"
-cp -r "$REPO_DIR/server/dist/"* "$BACKEND_TARGET/"
+mkdir -p "$BACKEND_TARGET" "$BACKEND_RUNTIME_DIR"
+cp "$REPO_DIR/server/ecosystem.config.js" "$BACKEND_RUNTIME_DIR/ecosystem.config.js"
+cp -r "$BACKEND_SOURCE_DIR/"* "$BACKEND_TARGET/"
 host_runtime_updated=0
 container_runtime_updated=0
 HOST_RUNTIME_ENV_FILE=""
 HOST_DATABASE_TARGET_ID=""
 CONTAINER_DATABASE_TARGET_ID=""
 
-if HOST_RUNTIME_ENV_FILE="$(resolve_host_runtime_env_file "$REPO_DIR/server")" \
+if HOST_RUNTIME_ENV_FILE="$(resolve_host_runtime_env_file "$BACKEND_RUNTIME_DIR")" \
     && HOST_DATABASE_TARGET_ID="$(get_database_target_id_from_env_file "$HOST_RUNTIME_ENV_FILE")"; then
-    if run_host_pm2 "$HOST_RUNTIME_ENV_FILE" "$HOST_RUNTIME_ID" reload duban-server --update-env 2>/dev/null; then
+    if run_host_pm2 "$HOST_RUNTIME_ENV_FILE" "$HOST_RUNTIME_ID" startOrReload ecosystem.config.js --update-env 2>/dev/null; then
         log "  ✅ PM2 重启成功"
         host_runtime_updated=1
     else
@@ -253,11 +285,11 @@ if command -v docker >/dev/null 2>&1 \
     && docker inspect -f '{{.State.Running}}' "$APP_CONTAINER" 2>/dev/null | grep -qx true; then
     log "  检测到应用容器 $APP_CONTAINER，正在同步容器内 /app/server/dist..."
     docker exec "$APP_CONTAINER" mkdir -p /app/server/dist
-    docker cp "$REPO_DIR/server/dist/." "$APP_CONTAINER:/app/server/dist/"
+    docker cp "$BACKEND_SOURCE_DIR/." "$APP_CONTAINER:/app/server/dist/"
     if docker exec \
         -e DEPLOY_RUNTIME_ID="$CONTAINER_RUNTIME_ID" \
         "$APP_CONTAINER" \
-        pm2 reload duban-server --update-env 2>/dev/null; then
+        pm2 startOrReload /app/server/ecosystem.config.js --update-env 2>/dev/null; then
         if CONTAINER_DATABASE_TARGET_ID="$(get_container_database_target_id)"; then
             log "  ✅ 容器后端已部署并重启"
             container_runtime_updated=1
@@ -310,16 +342,16 @@ log "  ✅ 数据库结构与内置角色已刷新"
 
 # 6. 部署前端（从本地构建产物）
 log "[6/7] 部署前端到 $FRONTEND_TARGET..."
-if [ -d "$REPO_DIR/dist" ] && [ -n "$(ls -A $REPO_DIR/dist 2>/dev/null)" ]; then
+if [ -d "$FRONTEND_SOURCE_DIR" ] && [ -n "$(ls -A "$FRONTEND_SOURCE_DIR" 2>/dev/null)" ]; then
     mkdir -p "$FRONTEND_TARGET"
     rm -rf "$FRONTEND_TARGET"/*
-    cp -r "$REPO_DIR/dist/"* "$FRONTEND_TARGET/"
+    cp -r "$FRONTEND_SOURCE_DIR/"* "$FRONTEND_TARGET/"
     log "  ✅ 前端已部署到宿主机"
 
     if command -v docker >/dev/null 2>&1 \
         && docker inspect -f '{{.State.Running}}' "$APP_CONTAINER" 2>/dev/null | grep -qx true; then
         log "  检测到前端容器 $APP_CONTAINER，正在同步容器内 /app/dist..."
-        docker cp "$REPO_DIR/dist/." "$APP_CONTAINER:/app/dist/"
+        docker cp "$FRONTEND_SOURCE_DIR/." "$APP_CONTAINER:/app/dist/"
         docker exec "$APP_CONTAINER" nginx -t
         docker exec "$APP_CONTAINER" nginx -s reload
         log "  ✅ 容器前端已部署并刷新 Nginx"

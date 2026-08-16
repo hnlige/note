@@ -132,7 +132,10 @@ export const messages = mysqlTable('messages', {
   receiverName: varchar('receiver_name', { length: 50 }),
   senderId: varchar('sender_id', { length: 36 }),
   senderName: varchar('sender_name', { length: 50 }),
-});
+}, (table) => ({
+  receiverTimestampIdx: index('messages_receiver_timestamp_id_idx').on(table.receiverId, table.timestamp, table.id),
+  timestampIdx: index('messages_timestamp_id_idx').on(table.timestamp, table.id),
+}));
 
 // 广播消息也必须按用户分别维护已读/删除状态，避免一人操作影响所有接收者。
 export const messageUserStates = mysqlTable('message_user_states', {
@@ -151,7 +154,9 @@ export const activities = mysqlTable('activities', {
   content: text('content'),
   timestamp: datetime('timestamp').notNull().default(sql`now()`),
   type: varchar('type', { length: 20 }).notNull(),
-});
+}, (table) => ({
+  timestampIdx: index('activities_timestamp_id_idx').on(table.timestamp, table.id),
+}));
 
 // ─── 亮灯记录 ───
 export const lightRecords = mysqlTable('light_records', {
@@ -230,7 +235,9 @@ export const auditRecords = mysqlTable('audit_records', {
   reviewedAt: datetime('reviewed_at'),
   rating: int('rating'),
   evaluation: text('evaluation'),
-});
+}, (table) => ({
+  submittedAtIdx: index('audit_records_submitted_at_id_idx').on(table.submittedAt, table.id),
+}));
 
 // ─── 异步任务表 ───
 export const asyncTasks = mysqlTable('async_tasks', {
@@ -280,4 +287,6 @@ export const operationLogs = mysqlTable('operation_logs', {
   detail: text('detail'),
   ip: varchar('ip', { length: 50 }),
   timestamp: datetime('timestamp').notNull().default(sql`now()`),
-});
+}, (table) => ({
+  timestampIdx: index('operation_logs_timestamp_id_idx').on(table.timestamp, table.id),
+}));

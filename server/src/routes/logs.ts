@@ -5,6 +5,7 @@ import { requireModuleAccess } from './module-authz.middleware';
 import { AuthenticatedRequest } from './auth.middleware';
 import { AuthSessionUser } from './auth.session';
 import { getCurrentAccessContext } from './access.context';
+import { getPageRequest } from './pagination';
 
 interface OperationLogInput {
   action?: unknown;
@@ -82,11 +83,16 @@ logsRouter.get('/', requireLogRead, async (req: AuthenticatedRequest, res: Respo
   try {
     const db = await getDb();
     const { operationLogs: logsTable } = await import('../db/schema');
-    const { desc } = await import('drizzle-orm');
+    const { count, desc } = await import('drizzle-orm');
     const limit = parseLogLimit(req.query.limit);
     if (limit === null) return res.status(400).json({ error: '日志条数必须是 1 到 500 的整数' });
-    const all = await db.select().from(logsTable).orderBy(desc(logsTable.timestamp)).limit(limit);
-    return res.json(all);
+    const page = getPageRequest(req.query as Record<string, unknown>, limit, 500);
+    const [{ total }] = await db.select({ total: count() }).from(logsTable);
+    const rows = await db.select().from(logsTable)
+      .orderBy(desc(logsTable.timestamp), desc(logsTable.id))
+      .limit(page.pageSize)
+      .offset((page.page - 1) * page.pageSize);
+    return res.json({ data: rows, pagination: { ...page, total: Number(total || 0), totalPages: Math.ceil(Number(total || 0) / page.pageSize) } });
   } catch (error) {
     console.error('Get logs error:', error);
     return res.status(500).json({ error: '获取操作日志失败' });

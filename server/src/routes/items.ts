@@ -11,6 +11,7 @@ import { ensureNotificationIdentityColumns } from './notification.schema';
 import { buildCreateItemMessages, buildDelayMessages, buildFeedbackMessages, buildSuspendMessages, buildShareMessages } from './item-workflow';
 import { validateCreateItemPayload } from './validation';
 import { getCurrentAccessContext } from './access.context';
+import { resolveAttachmentUrls } from '../storage/cos';
 
 export const itemsRouter = Router();
 
@@ -275,7 +276,7 @@ function normalizeItemJsonFields<T extends Record<string, any>>(item: T): T {
     deptNames: asStringList(item.deptNames),
     subTasks: asArrayValue(item.subTasks),
     sharedWith: asArrayValue(item.sharedWith),
-    attachments: asArrayValue(item.attachments),
+    attachments: resolveAttachmentUrls(asArrayValue(item.attachments)),
   };
 }
 
@@ -625,7 +626,7 @@ itemsRouter.get('/', async (req: AuthenticatedRequest, res: Response) => {
         actorUserId: n.actorUserId || undefined,
         content: n.content,
         timestamp: formatTimestamp(n.timestamp),
-        attachments: asArrayValue(n.attachments),
+        attachments: resolveAttachmentUrls(asArrayValue(n.attachments)),
       }));
       const signOff = computeSignOffStatus(item, fullTimeline);
       return {
@@ -713,7 +714,7 @@ itemsRouter.get('/:id', async (req: AuthenticatedRequest & Request<{ id: string 
         actorUserId: n.actorUserId || undefined,
         content: n.content,
         timestamp: formatTimestamp(n.timestamp),
-        attachments: asArrayValue(n.attachments),
+        attachments: resolveAttachmentUrls(asArrayValue(n.attachments)),
       })),
       effectiveStatus: getEffectiveItemStatus({ ...visibleItem, timeline } as any),
       signOffStatus: signOff.status,

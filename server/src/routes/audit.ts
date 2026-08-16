@@ -2,7 +2,8 @@ import { Router, Request, Response } from 'express';
 import { getDb } from '../db';
 import { canManageAudit, canReadAudit } from './module-authz';
 import { requireModuleAccess } from './module-authz.middleware';
-import { desc } from 'drizzle-orm';
+import { count, desc } from 'drizzle-orm';
+import { buildPagination, getPageRequest } from './pagination';
 
 export const auditRouter = Router();
 const requireAuditRead = requireModuleAccess(canReadAudit, '当前账号无审核访问权限');
@@ -24,12 +25,17 @@ export function toAuditRecordDto(record: Record<string, any>) {
   };
 }
 
-auditRouter.get('/', requireAuditRead, async (_req: Request, res: Response) => {
+auditRouter.get('/', requireAuditRead, async (req: Request, res: Response) => {
   try {
     const db = await getDb();
     const { auditRecords: auditTable } = await import('../db/schema');
-    const all = await db.select().from(auditTable).orderBy(desc(auditTable.submittedAt), desc(auditTable.id));
-    return res.json(all.map(toAuditRecordDto));
+    const page = getPageRequest(req.query as Record<string, unknown>);
+    const [{ total }] = await db.select({ total: count() }).from(auditTable);
+    const rows = await db.select().from(auditTable)
+      .orderBy(desc(auditTable.submittedAt), desc(auditTable.id))
+      .limit(page.pageSize)
+      .offset((page.page - 1) * page.pageSize);
+    return res.json({ data: rows.map(toAuditRecordDto), pagination: buildPagination(page, Number(total || 0)) });
   } catch (error) {
     console.error('Get audit records error:', error);
     return res.status(500).json({ error: '获取审核记录失败' });

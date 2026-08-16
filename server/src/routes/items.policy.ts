@@ -72,6 +72,17 @@ function normalizeDateValue(value: unknown): unknown {
   return new Date(value);
 }
 
+function sanitizeAttachmentMetadata(value: unknown): unknown {
+  if (!Array.isArray(value)) return value;
+  return value.map((attachment) => {
+    if (!attachment || typeof attachment !== 'object' || Array.isArray(attachment)) return attachment;
+    const record = attachment as Record<string, unknown>;
+    if (typeof record.storageKey !== 'string' || !record.storageKey) return attachment;
+    const { url: _signedUrl, ...persisted } = record;
+    return persisted;
+  });
+}
+
 export function getInvalidItemUpdateFields(payload: Record<string, unknown>): string[] {
   return Object.keys(payload).filter((field) => UNSUPPORTED_ITEM_UPDATE_FIELDS.has(field));
 }
@@ -97,6 +108,11 @@ export function sanitizeItemUpdates(payload: Record<string, unknown>, now = new 
     // meetingName → meetingSource (前端字段 → 后端数据库字段)
     if (field === 'meetingName' && value !== undefined) {
       updates['meetingSource'] = value;
+      return;
+    }
+
+    if (field === 'attachments') {
+      updates[field] = sanitizeAttachmentMetadata(value);
       return;
     }
 
