@@ -14,7 +14,7 @@ SERVER_INBOX="${SERVER_INBOX:-/opt/duban/incoming}"
 REMOTE_TARGET="${SERVER_USER}@${SERVER_IP}"
 PUSH_TO_GIT="${PUSH_TO_GIT:-0}"
 SSH_KEY="${SSH_KEY:-}"
-SSH_ARGS=(-o StrictHostKeyChecking=no)
+SSH_ARGS=(-o StrictHostKeyChecking=no -o SetEnv=LC_ALL=C -o SetEnv=LANG=C)
 
 if [ -n "$SSH_KEY" ]; then
     if [ ! -f "$SSH_KEY" ]; then
