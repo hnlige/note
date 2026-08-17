@@ -55,6 +55,7 @@ type SingleTarget = {
   subTaskId: string | null;
   receiverId: string;
   receiverName: string;
+  itemTitle: string;
   label: string;
 };
 
@@ -252,6 +253,7 @@ const Monitoring: React.FC = () => {
       try {
         const result = await api.urges.create({
           itemId: singleTarget.itemId,
+          itemTitle: singleTarget.itemTitle,
           receiverId: singleTarget.receiverId,
           receiver: singleTarget.receiverName,
           subTaskId: singleTarget.subTaskId ?? undefined,
@@ -386,6 +388,7 @@ const Monitoring: React.FC = () => {
                 disabled={urgeDisabled}
                 onClick={() => openSingleDrawer({
                   itemId: item.id,
+                  itemTitle: item.title,
                   subTaskId: row.subTaskId,
                   receiverId: row.assigneeId!,
                   receiverName: row.assigneeName || row.assigneeId!,

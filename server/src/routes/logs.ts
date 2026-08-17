@@ -1,4 +1,5 @@
 import { Router, Response } from 'express';
+import { randomUUID } from 'node:crypto';
 import { getDb } from '../db';
 import { canReadLogs, canWriteOperationLog } from './module-authz';
 import { requireModuleAccess } from './module-authz.middleware';
@@ -63,7 +64,7 @@ export function buildOperationLogValues(context: OperationLogRequestContext): Op
   if (!body) return null;
 
   return {
-    id: context.id || crypto.randomUUID(),
+    id: context.id || randomUUID(),
     userId: authUser.id,
     userName: currentUser.name || currentUser.username || authUser.id,
     action: body.action,

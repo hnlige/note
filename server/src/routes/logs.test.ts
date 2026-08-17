@@ -100,6 +100,16 @@ test('POST log values ignore forged identity, network, id, and timestamp fields'
   })?.userName, 'auth-user');
 });
 
+test('POST log values generate a server id when the request does not provide one', async () => {
+  const { buildOperationLogValues } = await import('./logs');
+  const values = buildOperationLogValues({
+    body: { action: '测试操作' },
+    authUser: { id: 'auth-user' },
+    currentUser: { id: 'auth-user', name: '真实用户' },
+  });
+  assert.match(values?.id || '', /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
+});
+
 test('logs endpoint remains protected from unauthenticated and export-only writes', async () => {
   const { requireAuth } = await import('./auth.middleware');
   const authState: { status?: number } = {};
