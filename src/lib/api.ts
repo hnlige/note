@@ -12,6 +12,11 @@ export type ItemPageAuth =
   | 'MENU_MONITORING'
   | 'MENU_MESSAGES';
 
+export type ItemsListResponse = any[] | {
+  data: any[];
+  pagination: { page: number; pageSize: number; total: number; totalPages: number };
+};
+
 export function hasAuthToken(storage?: Pick<Storage, 'getItem'> | null): boolean {
   try {
     const authStorage = storage ?? (typeof window !== 'undefined' ? localStorage : null);
@@ -136,7 +141,7 @@ export const api = {
 
   // ─── Items ───
   items: {
-    list: (page = 1, pageSize = 200, pageAuth?: ItemPageAuth) => request<{ data: any[]; pagination: { page: number; pageSize: number; total: number; totalPages: number } }>(
+    list: (page = 1, pageSize = 200, pageAuth?: ItemPageAuth) => request<ItemsListResponse>(
       `/items?page=${page}&pageSize=${pageSize}`,
       withPageAuth(pageAuth),
     ),

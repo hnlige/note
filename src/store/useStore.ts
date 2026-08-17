@@ -4,7 +4,7 @@ import { User, UserRole, SupervisionItem, Activity, TimelineNode, UrgeRecord, Te
 import { getMissingRolesToCreate, mapRemoteRoleToRole } from './roles.sync';
 import { normalizeMessagePayload, normalizeUrgePayload } from './notification-payload';
 import { canAccessByAuthCodes, canUseAllowedAction, getRolesByUser, getStrictUserAuthCodes } from './role-access';
-import { normalizeRemoteItem, resolveSyncedItems } from './item-sync';
+import { normalizeRemoteItem, resolveSyncedItems, unpackItemsListResponse } from './item-sync';
 import type { ItemPageAuth } from '../lib/api';
 import { aggregateSubTaskStatus, getEffectiveStatusForUser, syncAllSubTasks, updateUserSubTaskForIdentity } from '../lib/item-format';
 import { generateClientId } from '../lib/id';
@@ -1683,15 +1683,15 @@ export const useStore = create<WorkbenchState>()(
   syncItems: async (pageAuth) => {
     try {
       const { api } = await import('../lib/api');
-      const firstPage = await api.items.list(1, 200, pageAuth);
-      if (!Array.isArray(firstPage.data)) return;
-      const pages = [firstPage.data];
+      const firstPage = unpackItemsListResponse(await api.items.list(1, 200, pageAuth));
+      if (!firstPage) return;
+      const pages = [firstPage.items];
       // 现有工作台/统计仍依赖全局事项集合；按页取数保证服务端不会再全表加载时间轴。
       // 后续页面筛选迁移为服务端条件后，可删除这段兼容聚合。
-      for (let page = 2; page <= firstPage.pagination.totalPages; page += 1) {
-        const response = await api.items.list(page, firstPage.pagination.pageSize, pageAuth);
-        if (!Array.isArray(response.data)) break;
-        pages.push(response.data);
+      for (let page = 2; firstPage.pagination && page <= firstPage.pagination.totalPages; page += 1) {
+        const response = unpackItemsListResponse(await api.items.list(page, firstPage.pagination.pageSize, pageAuth));
+        if (!response) break;
+        pages.push(response.items);
       }
       set({
         items: resolveSyncedItems(pages.flat(), get().items, []),
