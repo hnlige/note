@@ -43,6 +43,7 @@ const schemaColumns: readonly ColumnSpec[] = [
   { tableName: 'items', columnName: 'original_status', definition: 'varchar(20) NULL' },
   { tableName: 'items', columnName: 'deleted_at', definition: 'datetime NULL' },
   { tableName: 'items', columnName: 'deleted_by_id', definition: 'varchar(36) NULL' },
+  { tableName: 'items', columnName: 'change_history', definition: 'json NULL' },
   { tableName: 'timeline_nodes', columnName: 'attachments', definition: 'text NULL' },
   { tableName: 'timeline_nodes', columnName: 'actor_user_id', definition: 'varchar(36) NULL' },
   { tableName: 'urge_records', columnName: 'content', definition: 'text NULL' },

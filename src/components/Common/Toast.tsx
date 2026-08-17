@@ -1,6 +1,7 @@
-import React, { useState, useCallback, createContext, useContext } from 'react';
+import React, { useState, useCallback, createContext, useContext, useEffect } from 'react';
 import { CheckCircle2, AlertCircle, X } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
+import { setToastHandler } from '../../lib/toastEmitter';
 
 type ToastType = 'success' | 'info' | 'warning' | 'error';
 
@@ -28,6 +29,12 @@ export const ToastProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       setToasts(prev => prev.filter(t => t.id !== id));
     }, 3000);
   }, []);
+
+  // 注册到独立通道，供 store 等非组件代码调用
+  useEffect(() => {
+    setToastHandler(showToast);
+    return () => setToastHandler(null);
+  }, [showToast]);
 
   const dismiss = (id: string) => {
     setToasts(prev => prev.filter(t => t.id !== id));

@@ -9,6 +9,7 @@ import type { ItemPageAuth } from '../lib/api';
 import { aggregateSubTaskStatus, getEffectiveStatusForUser, syncAllSubTasks, updateUserSubTaskForIdentity } from '../lib/item-format';
 import { generateClientId } from '../lib/id';
 import { PERMISSION_TREE } from '../permissions/page-actions';
+import { toast } from '../lib/toastEmitter';
 
 export { normalizeRemoteItem } from './item-sync';
 
@@ -44,6 +45,7 @@ const ITEM_API_UPDATE_FIELDS = new Set([
   'sharedWith',
   'attachments',
   'timeline',
+  'changeHistory',
 ]);
 
 function getItemApiUpdates(updates: Partial<SupervisionItem>): Partial<SupervisionItem> {
@@ -53,7 +55,9 @@ function getItemApiUpdates(updates: Partial<SupervisionItem>): Partial<Supervisi
 }
 
 function warnAndRollbackItems(error: unknown, setItems: (items: SupervisionItem[]) => void, previousItems: SupervisionItem[]) {
+  const message = error instanceof Error ? error.message : '操作失败，请稍后重试';
   console.warn('同步后端失败:', error);
+  toast(message, 'error');
   setItems(previousItems);
 }
 
@@ -730,7 +734,9 @@ export const useStore = create<WorkbenchState>()(
         const { api } = await import('../lib/api');
         await api.items.update(id, apiUpdates, pageAuth);
       } catch (e) {
+        const message = e instanceof Error ? e.message : '保存失败，请稍后重试';
         console.warn('同步后端失败:', e);
+        toast(message, 'error');
         return false;
       }
     }

@@ -67,6 +67,7 @@ export const items = mysqlTable('items', {
   subTasks: json('sub_tasks'),
   sharedWith: json('shared_with'),
   attachments: json('attachments'),
+  changeHistory: json('change_history'),
   originalStatus: varchar('original_status', { length: 20 }),
   deletedAt: datetime('deleted_at'),
   deletedById: varchar('deleted_by_id', { length: 36 }),

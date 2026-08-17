@@ -34,11 +34,11 @@ const EDITABLE_ITEM_FIELDS = new Set([
   'attachments',
   'timeline',
   'rejectReason',
+  'changeHistory',
 ]);
 
 const UNSUPPORTED_ITEM_UPDATE_FIELDS = new Set([
   'restartDate',
-  'changeHistory',
   'issuerId',
   'issuerName',
   'issuerAccount',
@@ -317,6 +317,7 @@ export function mapTimelineNodeToAction(node: unknown): string | null {
     case 'DELAY': return 'DELAY_ITEM';
     case 'RESTART': return 'RESTART_ITEM';
     case 'DISABLE': return 'DISABLE_ITEM';
+    case 'CHANGE': return 'CHANGE_ITEM';
     case 'CREATE': return 'CHANGE_ITEM';
     default: return null;
   }
