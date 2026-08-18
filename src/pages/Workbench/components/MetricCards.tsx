@@ -5,7 +5,8 @@ import { useStore } from '../../../store/useStore';
 import { motion } from 'framer-motion';
 import { buildWorkbenchStatusMetrics, WorkbenchMetricKey } from './workbench-metrics';
 import { filterVisibleItems, isSelfOnlyOwnerRole } from '../../../store/item-access';
-import { isItemOwnerForUser } from '../../../lib/item-format';
+import { mapRoleIdentityToUserRole } from '../../../store/role-access';
+import { isItemOwnerForUser, isItemFollowerForUser } from '../../../lib/item-format';
 import type { Role, User, OrgUser } from '../../../types';
 
 /**
@@ -63,17 +64,41 @@ export const MetricCards: React.FC = () => {
   const effectiveUser = orgUsers.find(u => u.id === currentUser.id) || currentUser;
   const metricMode = resolveWorkbenchMetricMode(effectiveUser, roles);
 
+  // 跟进人(FOLLOWER)不是经办人：首页卡片只统计「本人作为责任人和/或跟进人」的督办事项，
+  // 与《我的督办》下「我的待办 / 我跟进的督办」口径一致；不再把数据范围(部门/组织)内
+  // 别人负责的督办也计入「未完成」等卡片（否则会出现「首页有数、我的待办为空」的错位）。
+  // 管理员/领导(item 模式且非跟进人)仍按可见范围看全量概览。
+  const userRoleType = mapRoleIdentityToUserRole(effectiveUser);
+  const isFollower = userRoleType === 'FOLLOWER';
+
   const getMetrics = (): MetricCard[] => {
     const scopedItems = metricMode === 'person'
       ? visibleItems.filter(item => isItemOwnerForUser(item, currentUser))
-      : visibleItems;
+      : (isFollower
+          ? visibleItems.filter(item => isItemOwnerForUser(item, currentUser) || isItemFollowerForUser(item, currentUser))
+          : visibleItems);
     const rawMetrics = buildWorkbenchStatusMetrics(scopedItems, metricMode, currentUser);
+
+    // 跟进人视角下钻到《我的督办》个人页（其范围与首页卡片一致），避免跳到宽泛台账列表造成数量不符。
+    // 同时按卡片语义带 role=todo + status 参数，让《我的督办》能定位到对应 tab 与状态筛选，
+    // 解决「未签收卡片下钻后看不到未签收筛选」的问题。已超期含 OVERDUE/DELAYED 多状态，
+    // 《我的督办》单状态页签无法一次覆盖，故不带 status，由用户在列表内查看。
+    const followerCardParams: Record<WorkbenchMetricKey, string> = {
+      pendingOpen: '?role=todo&status=PENDING',
+      overdue: '?role=todo',
+      noFeedback: '?role=todo',
+      incomplete: '?role=todo',
+      completed: '?role=todo&status=COMPLETED',
+    };
 
     return rawMetrics.map(metric => ({
       ...metric,
       ...METRIC_STYLES[metric.key],
-      // 责任人(自己名下)视角下钻列表额外按 ownerId=me 限定，确保与首页卡片口径一致
-      params: metricMode === 'person' ? `${metric.params}&ownerId=me` : metric.params,
+      // 责任人(自己名下)视角下钻列表额外按 ownerId=me 限定，确保与首页卡片口径一致。
+      path: isFollower ? '/my-items' : metric.path,
+      params: isFollower
+        ? followerCardParams[metric.key]
+        : (metricMode === 'person' ? `${metric.params}&ownerId=me` : metric.params),
     }));
   };
 

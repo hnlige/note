@@ -1,5 +1,5 @@
-import React, { useState, useMemo, useRef } from 'react';
-import { useNavigate } from 'react-router-dom';
+import React, { useEffect, useState, useMemo, useRef } from 'react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { MainLayout } from '../../components/Layout/MainLayout';
 import { useStore } from '../../store/useStore';
 import { useToast } from '../../components/Common/Toast';
@@ -23,17 +23,29 @@ import { motion } from 'framer-motion';
 import { Drawer } from '../../components/Common/Drawer';
 import { formatDate, getEffectiveStatusForUser, getItemStatusLabel, getUserSubTask, isManualDateOnOrAfter, isValidManualDateInput, normalizeManualDateInput, todayDateString, updateUserSubTask, compareItemsByRaiseDateDesc } from '../../lib/item-format';
 import { canUseAllowedAction, mapRoleIdentityToUserRole } from '../../store/role-access';
-import { buildMyItemsScope, filterMyItemsByStatus, getMyRoleScopedStatus, getVisibleMyItemsRoleTabs, MyItemsRoleTabKey, MyItemsStatusTabKey } from './my-items-scope';
+import { buildMyItemsScope, filterMyItemsByStatus, getMyRoleScopedStatus, getTodoStatus, getVisibleMyItemsRoleTabs, MyItemsRoleTabKey, MyItemsStatusTabKey } from './my-items-scope';
 
 type RoleTabKey = MyItemsRoleTabKey;
 type TabKey = MyItemsStatusTabKey;
 
 const MyItems: React.FC = () => {
   const navigate = useNavigate();
-  const { items, currentUser, updateItem, addLog, orgUsers, roles, approveComplete, rejectItem } = useStore();
+  const [searchParams] = useSearchParams();
+  const { items, currentUser, updateItem, addLog, orgUsers, roles, approveComplete, rejectItem, syncItems } = useStore();
   const { showToast } = useToast();
-  const [activeRoleTab, setActiveRoleTab] = useState<RoleTabKey>('todo');
-  const [activeTab, setActiveTab] = useState<TabKey>('all');
+  const [isItemsLoading, setIsItemsLoading] = useState(true);
+  // 工作台首页卡片下钻带 role=<todo|owner|follower> 与 status=<PENDING|...> 参数，
+  // 进入页面时据其定位到对应顶层页签与状态筛选；非法值回退到默认 todo / all。
+  const validRoleTabs: RoleTabKey[] = ['todo', 'owner', 'follower'];
+  const validStatusTabs: TabKey[] = ['all', 'PENDING', 'EXECUTING', 'OVERDUE', 'DELAYED', 'COMPLETED'];
+  const initialRole = (searchParams.get('role') as RoleTabKey | null);
+  const initialStatus = (searchParams.get('status') as TabKey | null);
+  const [activeRoleTab, setActiveRoleTab] = useState<RoleTabKey>(
+    initialRole && validRoleTabs.includes(initialRole) ? initialRole : 'todo',
+  );
+  const [activeTab, setActiveTab] = useState<TabKey>(
+    initialStatus && validStatusTabs.includes(initialStatus) ? initialStatus : 'all',
+  );
   const [feedbackDrawer, setFeedbackDrawer] = useState<{ open: boolean; itemId: string; itemTitle: string }>({ open: false, itemId: '', itemTitle: '' });
   const [feedbackContent, setFeedbackContent] = useState('');
   const [feedbackFiles, setFeedbackFiles] = useState<File[]>([]);
@@ -48,6 +60,23 @@ const MyItems: React.FC = () => {
     () => canUseAllowedAction(currentUser, roles, 'EDIT_ITEM') || canUseAllowedAction(currentUser, roles, 'FEEDBACK_ITEM'),
     [currentUser, roles],
   );
+
+  // 《我的督办》直接依赖最新的责任人/跟进人关系。进入页面时主动回读权威事项数据，
+  // 不依赖 MainLayout 的并发启动同步，避免旧标签页或同步时序导致短暂/持续显示 0。
+  useEffect(() => {
+    let active = true;
+    setIsItemsLoading(true);
+    syncItems()
+      .catch(() => {
+        if (active) showToast('督办事项加载失败，请刷新页面重试', 'error');
+      })
+      .finally(() => {
+        if (active) setIsItemsLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [currentUser.id, syncItems, showToast]);
 
   const resetFeedbackDrawer = () => {
     setFeedbackDrawer({ open: false, itemId: '', itemTitle: '' });
@@ -75,6 +104,14 @@ const MyItems: React.FC = () => {
     [userRoleType],
   );
 
+  // URL role 参数指定的页签若对当前用户不可见（如跟进人从 role=owner 下钻），
+  // 回退到「我的待办」，避免空白页或越权展示。
+  useEffect(() => {
+    if (!visibleRoleTabs.includes(activeRoleTab)) {
+      setActiveRoleTab('todo');
+    }
+  }, [visibleRoleTabs, activeRoleTab]);
+
   const myItemsScope = useMemo(
     () => buildMyItemsScope(items, currentMyItemsUser),
     [items, currentMyItemsUser],
@@ -93,8 +130,13 @@ const MyItems: React.FC = () => {
   );
 
   // 按角色 Tab + 状态 Tab 筛选
+  // 「我的待办」tab 默认无状态子页签 UI（混合责任人+跟进人视角），
+  // 但从工作台卡片下钻带 status 参数时仍按状态筛选（用 getTodoStatus 与 todoItems 口径一致）。
   const filteredItems = useMemo(() => {
-    if (activeRoleTab === 'todo') return myTodoItems;
+    if (activeRoleTab === 'todo') {
+      if (activeTab === 'all') return myTodoItems;
+      return myTodoItems.filter(item => getTodoStatus(item, currentMyItemsUser) === activeTab);
+    }
     return filterMyItemsByStatus(roleScopedItems, currentMyItemsUser, activeRoleTab, activeTab);
   }, [activeRoleTab, activeTab, currentMyItemsUser, roleScopedItems, myTodoItems]);
 
@@ -286,6 +328,17 @@ const MyItems: React.FC = () => {
 
   const showStatusTabs = activeRoleTab !== 'todo';
 
+  if (isItemsLoading) {
+    return (
+      <MainLayout>
+        <div className="bg-white rounded-2xl border border-slate-100 shadow-sm p-12 text-center">
+          <RefreshCw className="w-8 h-8 text-blue-500 mx-auto mb-4 animate-spin" />
+          <p className="text-slate-600 font-medium">正在加载最新督办事项...</p>
+        </div>
+      </MainLayout>
+    );
+  }
+
   return (
     <MainLayout>
       <div className="flex items-center justify-between mb-6">
@@ -442,7 +495,7 @@ const MyItems: React.FC = () => {
                     </span>
                     <span className="flex items-center gap-1">
                       <User className="w-3.5 h-3.5" />
-                      跟进人：{item.followerName || '-'}
+                      跟进人：{item.followerNames?.length ? item.followerNames.join('、') : item.followerName || '-'}
                     </span>
                     <span className="flex items-center gap-1">
                       <FileText className="w-3.5 h-3.5" />

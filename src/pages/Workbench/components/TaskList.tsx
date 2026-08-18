@@ -27,6 +27,7 @@ import { mapRoleIdentityToUserRole } from '../../../store/role-access';
 import { getActionBarMode } from './action-bar-mode';
 import { getWorkbenchRowActionVisibility } from './task-list-actions';
 import { buildOwnerWorkbenchTaskListItems } from '../../../lib/owner-workbench';
+import { buildMyItemsScope } from '../../MyItems/my-items-scope';
 import { paginateTaskListItems, TASK_LIST_PAGE_SIZE_OPTIONS } from './task-list-pagination';
 
 export const TaskList: React.FC = () => {
@@ -37,8 +38,16 @@ export const TaskList: React.FC = () => {
   const [displayMode, setDisplayMode] = useState<'parent' | 'parentAndSubtasks'>('parent');
 
   const visibleItems = filterVisibleItems({ items, currentUser, orgUsers, roles, departments });
+  // owner 模式下，纯跟进人（如 r2 督办跟进人，虽具备 SIGN_ITEM/FEEDBACK_ITEM 能力）
+  // 的「我的待办任务」须纳入其作为跟进人的事项，与首页卡片口径（item 模式 + isFollower）
+  // 及《我的督办》个人页保持一致，避免「卡片有 9 条、列表 0 条」的错位。
+  // 纯责任人保持原 buildOwnerWorkbenchTaskListItems 口径不变。
+  const effectiveUser = orgUsers.find(u => u.id === currentUser.id) || currentUser;
+  const isFollower = mapRoleIdentityToUserRole(effectiveUser) === 'FOLLOWER';
   const scopedItems = mode === 'owner'
-    ? buildOwnerWorkbenchTaskListItems(visibleItems, currentUser)
+    ? (isFollower
+        ? buildMyItemsScope(visibleItems, currentUser).todoItems
+        : buildOwnerWorkbenchTaskListItems(visibleItems, currentUser))
     : visibleItems;
 
   const filteredItems = scopedItems.filter(item => {

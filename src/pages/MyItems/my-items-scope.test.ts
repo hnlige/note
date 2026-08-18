@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { buildMyItemsScope, filterMyItemsByStatus, getVisibleMyItemsRoleTabs } from './my-items-scope.ts';
+import { buildMyItemsScope, filterMyItemsByStatus, getTodoStatus, getVisibleMyItemsRoleTabs } from './my-items-scope.ts';
 import { SupervisionItem, User } from '../../types';
 
 const currentUser: User = {
@@ -123,4 +123,41 @@ test('getVisibleMyItemsRoleTabs maps role type to expected top-level tabs', () =
   assert.deepEqual(getVisibleMyItemsRoleTabs('OWNER'), ['todo', 'owner']);
   // 督办跟进人（FOLLOWER）：我的待办 + 我跟进的督办（无负责视角）
   assert.deepEqual(getVisibleMyItemsRoleTabs('FOLLOWER'), ['todo', 'follower']);
+});
+
+// 纯跟进人（如贺诗然 r2，不负责任何事项、只跟进）的工作台「我的待办任务」
+// 必须纳入其作为跟进人的事项，与首页卡片口径一致；这是 TaskList owner 模式 follower 分叉的核心依赖。
+test('buildMyItemsScope: 纯跟进人 todoItems 纳入其跟进的非完成事项，排除完成/归档/禁用/删除', () => {
+  const follower: User = { id: 'follower-h', name: '贺诗然', username: '00003026', role: 'FOLLOWER' };
+  const scope = buildMyItemsScope([
+    // 跟进人视角：事项整体状态决定是否待办
+    item({ id: 'follow-pending', status: 'PENDING', followerId: 'follower-h' }),
+    item({ id: 'follow-executing', status: 'EXECUTING', followerId: 'follower-h' }),
+    item({ id: 'follow-overdue', status: 'OVERDUE', followerId: 'follower-h' }),
+    item({ id: 'follow-delayed', status: 'DELAYED', followerId: 'follower-h' }),
+    item({ id: 'follow-suspended', status: 'SUSPENDED', followerId: 'follower-h' }),
+    item({ id: 'follow-completed', status: 'COMPLETED', followerId: 'follower-h' }),
+    item({ id: 'follow-archived', status: 'ARCHIVED', followerId: 'follower-h' }),
+    item({ id: 'follow-disabled', status: 'DISABLED', followerId: 'follower-h' }),
+    item({ id: 'follow-deleted', status: 'DELETED', followerId: 'follower-h' }),
+    // 非本人跟进的事项不应计入
+    item({ id: 'other-pending', status: 'PENDING', followerId: 'someone-else' }),
+  ], follower);
+
+  // ownedItems 应为空（纯跟进人不负责任何事项）
+  assert.deepEqual(scope.ownedItems.map(row => row.id), []);
+  // followedItems 应包含所有非删除的跟进事项
+  assert.deepEqual(scope.followedItems.map(row => row.id), [
+    'follow-pending', 'follow-executing', 'follow-overdue',
+    'follow-delayed', 'follow-suspended', 'follow-completed', 'follow-archived', 'follow-disabled',
+  ]);
+  // todoItems 应排除 COMPLETED/ARCHIVED/DISABLED/DELETED，保留待办状态
+  assert.deepEqual(scope.todoItems.map(row => row.id), [
+    'follow-pending', 'follow-executing', 'follow-overdue',
+    'follow-delayed', 'follow-suspended',
+  ]);
+  // getTodoStatus 对纯跟进人应返回事项整体状态
+  assert.equal(getTodoStatus(scope.followedItems[0], follower), 'PENDING');
+  assert.equal(getTodoStatus(scope.followedItems[2], follower), 'OVERDUE');
+  assert.equal(getTodoStatus(scope.followedItems[4], follower), 'SUSPENDED');
 });
