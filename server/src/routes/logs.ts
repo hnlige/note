@@ -58,15 +58,18 @@ export function parseLogLimit(value: unknown): number | null {
 export function buildOperationLogValues(context: OperationLogRequestContext): OperationLogValues | null {
   const authUser = context.authUser;
   if (!authUser?.id) return null;
-  const currentUser = context.currentUser;
-  if (!currentUser || currentUser.id !== authUser.id) return null;
   const body = parseOperationLogBody(context.body);
   if (!body) return null;
+  // 展示用姓名仅在访问上下文与认证会话属于同一用户时才取 users 表；辅助查询
+  // 缺失或异常时退回已认证会话。这样既不因辅助字段解析失败丢弃审计记录，
+  // 也不会把其他用户的姓名记入当前会话的审计记录。
+  const currentUser = context.currentUser?.id === authUser.id ? context.currentUser : null;
+  const resolvedName = currentUser?.name || currentUser?.username || authUser.name || authUser.username || String(authUser.id);
 
   return {
     id: context.id || randomUUID(),
     userId: authUser.id,
-    userName: currentUser.name || currentUser.username || authUser.id,
+    userName: resolvedName,
     action: body.action,
     module: body.module,
     detail: body.detail,
