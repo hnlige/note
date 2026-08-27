@@ -373,6 +373,21 @@ test('getActionForItemUpdate maps sharing, attachments and timeline to their spe
   }), 'CHANGE_ITEM');
 });
 
+test('follower feedback payload is identifiable for legacy FEEDBACK_ITEM role fallback', () => {
+  assert.equal(
+    policyModule.isFollowerFeedbackUpdatePayload?.({
+      timeline: [{ id: 'follower-feedback', type: 'FOLLOWER_FEEDBACK' }],
+    }),
+    true,
+  );
+  assert.equal(
+    policyModule.isFollowerFeedbackUpdatePayload?.({
+      timeline: [{ id: 'owner-feedback', type: 'FEEDBACK' }],
+    }),
+    false,
+  );
+});
+
 test('getActionForItemUpdate resolves recycle, audit, and urge route actions to catalog actions', () => {
   assert.equal(getActionForItemUpdate({ status: 'EXECUTING' }, 'DELETED'), 'RESTART_ITEM');
   assert.equal(getActionForItemUpdate({ status: 'PENDING' }, 'DELETED'), 'RESTART_ITEM');

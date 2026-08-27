@@ -237,11 +237,16 @@ export function normalizeFollowerSelection(
   };
 }
 
-function isFollowerFeedbackTimelineNode(node: unknown): boolean {
+export function isFollowerFeedbackTimelineNode(node: unknown): boolean {
   return typeof node === 'object' &&
     node !== null &&
     'type' in node &&
     (node as { type?: unknown }).type === 'FOLLOWER_FEEDBACK';
+}
+
+/** 跟进人反馈在数据层仍走 CHANGE_ITEM 兼容旧角色配置；用于权限兜底识别该语义。 */
+export function isFollowerFeedbackUpdatePayload(payload: Record<string, unknown>): boolean {
+  return isFollowerFeedbackTimelineNode(getLatestTimelineNode(payload.timeline));
 }
 
 function getLatestTimelineNode(value: unknown): unknown {
