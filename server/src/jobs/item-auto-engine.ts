@@ -19,6 +19,13 @@ type AutomationEvaluation = {
   nextLightStatus: 'RED' | 'YELLOW' | null;
 };
 
+type AutomationUser = {
+  id: string;
+  name?: string | null;
+  supervisorId?: string | null;
+  status?: string | null;
+};
+
 function asArray<T>(value: unknown): T[] {
   if (Array.isArray(value)) return value as T[];
   if (typeof value === 'string') {
@@ -86,7 +93,10 @@ export function evaluateItemAutomation(
       }
       const daysUntil = dueDate ? (startOfDay(dueDate).getTime() - today.getTime()) / 86400000 : Number.POSITIVE_INFINITY;
       const owner = { id: String(task.assigneeId || ''), name: String(task.assigneeName || '') };
-      if (daysUntil < 0 && ['PENDING', 'EXECUTING', 'DELAYED'].includes(task.status)) {
+      // 未签收的子任务没有责任人计划完成日期，不能仅因要求完成日期已过就变成“已超时”。
+      // 超时状态只属于已签收/已进入执行流程的责任人；每个责任人的子任务独立计算，
+      // 避免责任人 A 超期时把尚未签收的责任人 B 一并推进为 OVERDUE。
+      if (daysUntil < 0 && ['EXECUTING', 'DELAYED'].includes(task.status)) {
         overdueOwners.push(owner);
         urgeOwners.push(owner);
         return { ...task, status: 'OVERDUE' };
@@ -104,7 +114,8 @@ export function evaluateItemAutomation(
     const dueDate = getDueDate(null, item);
     const daysUntil = dueDate ? (startOfDay(dueDate).getTime() - today.getTime()) / 86400000 : Number.POSITIVE_INFINITY;
     const owner = { id: String(item.ownerId || asArray<string>(item.ownerIds)[0] || ''), name: String(item.ownerName || asArray<string>(item.ownerNames)[0] || '') };
-    if (daysUntil < 0 && ['PENDING', 'EXECUTING', 'DELAYED'].includes(item.status)) {
+    // 单责任人事项同样遵循“先签收，再进入超期”的规则；PENDING 只表示待签收。
+    if (daysUntil < 0 && ['EXECUTING', 'DELAYED'].includes(item.status)) {
       itemUpdates.status = 'OVERDUE';
       overdueOwners.push(owner);
       urgeOwners.push(owner);
@@ -135,16 +146,36 @@ export function evaluateItemAutomation(
 export function getAutomationNotificationRecipients(
   evaluation: AutomationEvaluation,
   rules: AutomationRules,
+  overdueReminderOwners = evaluation.overdueOwners,
 ): {
   reminderOwners: Array<{ id: string; name: string }>;
   autoUrgeOwners: Array<{ id: string; name: string }>;
 } {
   return {
     // 默认发送超期提醒；仅显式关闭时停止。
-    reminderOwners: rules.autoRemindEnabled === false ? [] : evaluation.overdueOwners,
+    reminderOwners: rules.autoRemindEnabled === false ? [] : overdueReminderOwners,
     // 默认不自动催办；仅显式开启时生成。
     autoUrgeOwners: rules.autoUrgeEnabled === true ? evaluation.urgeOwners : [],
   };
+}
+
+/** 将超期责任人映射为其直属上级；未配置直属上级时不向责任人本人误发“上级提醒”。 */
+export function getOverdueReminderRecipients(
+  evaluation: AutomationEvaluation,
+  users: readonly AutomationUser[],
+): Array<{ id: string; name: string }> {
+  const usersById = new Map(users.filter((user) => user.id).map((user) => [user.id, user]));
+  const seen = new Set<string>();
+  const recipients: Array<{ id: string; name: string }> = [];
+  for (const owner of evaluation.overdueOwners) {
+    const supervisorId = usersById.get(owner.id)?.supervisorId;
+    if (!supervisorId || seen.has(supervisorId)) continue;
+    const supervisor = usersById.get(supervisorId);
+    if (!supervisor || (supervisor.status !== undefined && supervisor.status !== null && supervisor.status !== 'ACTIVE')) continue;
+    seen.add(supervisor.id);
+    recipients.push({ id: supervisor.id, name: supervisor.name || supervisor.id });
+  }
+  return recipients;
 }
 
 async function shouldCreateAutoUrge(tx: any, itemId: string, receiverId: string, frequencyDays: number, now: Date) {
@@ -198,6 +229,12 @@ export async function runItemAutoEngine(db: any, now = new Date()): Promise<void
     // 自动提醒默认启用；只有显式关闭才不发送超期提醒。
     autoRemindEnabled: config?.autoRemindEnabled !== false,
   };
+  const users = await db.select({
+    id: schema.users.id,
+    name: schema.users.name,
+    supervisorId: schema.users.supervisorId,
+    status: schema.users.status,
+  }).from(schema.users);
   const candidates = await db.select({ id: schema.items.id }).from(schema.items);
 
   for (const candidate of candidates) {
@@ -221,7 +258,11 @@ export async function runItemAutoEngine(db: any, now = new Date()): Promise<void
             triggerMode: 'AUTO', operatorName: '系统自动', createdAt: now,
           });
         }
-        const notificationRecipients = getAutomationNotificationRecipients(evaluation, rules);
+        const notificationRecipients = getAutomationNotificationRecipients(
+          evaluation,
+          rules,
+          getOverdueReminderRecipients(evaluation, users),
+        );
         for (const owner of notificationRecipients.reminderOwners) {
           if (!owner.id) continue;
           await tx.insert(schema.messages).values({
