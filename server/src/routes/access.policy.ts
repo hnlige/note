@@ -136,6 +136,10 @@ function getDeptScopedUserIds(currentUser: AccessUserLike, users: AccessUserLike
 function getDeptAndDescendantSubordinateIds(currentUser: AccessUserLike, users: AccessUserLike[], customUserIds: string[] = [], departments?: AccessDepartmentLike[]): string[] {
   return [...new Set([
     ...getDeptScopedUserIds(currentUser, users, departments),
+    // 部门管理员既管理本部门及下级部门，也应能查看其汇报链上的下级人员。
+    // 汇报关系可能跨部门（例如上级被授权为部门管理员、下属仍归属其他科室），
+    // 不能仅依赖 deptId/部门树，否则责任人事项会被错误过滤。
+    ...getSelfAndDescendantSubordinateIds(currentUser.id, users),
     ...customUserIds,
   ])];
 }
@@ -421,6 +425,7 @@ type ItemAccessColumns = {
   followerIds: any;
   followerName: any;
   sharedWith: any;
+  subTasks?: any;
   deletedAt: any;
 };
 
@@ -455,6 +460,16 @@ function buildPersonMatchCondition(
   return or(...clauses);
 }
 
+function buildSubTaskAssigneeMatchCondition(subTasksColumn: any, userIds: string[], users: AccessUserLike[]): SQL | undefined {
+  const uniqueIds = [...new Set(userIds.filter(Boolean))];
+  if (uniqueIds.length === 0 || !subTasksColumn) return undefined;
+  const names = getUserNamesByIds(uniqueIds, users);
+  return or(
+    ...uniqueIds.map((id) => sql`JSON_SEARCH(${subTasksColumn}, 'one', ${id}, NULL, '$[*].assigneeId') IS NOT NULL`),
+    ...names.map((name) => sql`JSON_SEARCH(${subTasksColumn}, 'one', ${name}, NULL, '$[*].assigneeName') IS NOT NULL`),
+  );
+}
+
 /**
  * 把既有的内存数据范围策略编译为 MySQL 条件。
  * 列表查询使用此条件先下推权限，再用 filterItemsByAccess 作防御性校验，避免权限语义漂移时越权。
@@ -473,6 +488,7 @@ export function buildItemAccessWhere(
   const followerSubjectIds = getFollowerScopeSubjectIds(currentUser, currentRole, users, departments);
   const clauses: SQL[] = [];
   const ownerMatches = (userIds: string[]) => buildPersonMatchCondition(columns.ownerId, columns.ownerIds, columns.ownerName, userIds, users);
+  const ownerSubTaskMatches = (userIds: string[]) => buildSubTaskAssigneeMatchCondition(columns.subTasks, userIds, users);
   const followerMatches = (userIds: string[]) => buildPersonMatchCondition(columns.followerId, columns.followerIds, columns.followerName, userIds, users);
 
   // 共享字段存储为 [{ userId, userName }]，历史 TEXT 列也可由 MySQL JSON 函数读取。
@@ -497,6 +513,8 @@ export function buildItemAccessWhere(
   } else if (ownerScope === 'SELF_AND_DIRECT_SUBORDINATES' || ownerScope === 'DEPT' || ownerScope === 'MULTI_ORG') {
     const ownerMatch = ownerMatches(ownerSubjectIds);
     if (ownerMatch) clauses.push(ownerMatch);
+    const ownerSubTaskMatch = ownerSubTaskMatches(ownerSubjectIds);
+    if (ownerSubTaskMatch) clauses.push(ownerSubTaskMatch);
     if (ownerScope !== 'MULTI_ORG') {
       const selfFollowerMatch = followerMatches([currentUser.id]);
       if (selfFollowerMatch) clauses.push(selfFollowerMatch);
