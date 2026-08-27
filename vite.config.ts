@@ -4,7 +4,10 @@ import tsconfigPaths from "vite-tsconfig-paths";
 import { traeBadgePlugin } from 'vite-plugin-trae-solo-badge';
 
 // https://vite.dev/config/
-export default defineConfig({
+// react-dev-locator 是开发期 IDE 元素定位插件，会在每个 JSX 元素上注入
+// trae-inspector-* 属性（含源码文件路径与构建机绝对路径），只允许在 serve
+// 模式启用；随生产构建上线会膨胀 bundle 并向公网泄露本机路径。
+export default defineConfig(({ command }) => ({
   build: {
     // 不自动清空 dist/，避免本地单次删除 200+ 文件触发 WorkBuddy 安全删除守卫（阈值 50）。
     // 旧产物清理交给部署流程的 rsync --delete（服务器端执行），本地 dist 已被 gitignore，残留无害。
@@ -31,11 +34,11 @@ export default defineConfig({
   plugins: [
     react({
       babel: {
-        plugins: [
+        plugins: command === 'serve' ? [
           'react-dev-locator',
-        ],
+        ] : [],
       },
     }),
     tsconfigPaths()
   ],
-})
+}))
