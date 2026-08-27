@@ -265,17 +265,17 @@ CONTAINER_DATABASE_TARGET_ID=""
 
 if HOST_RUNTIME_ENV_FILE="$(resolve_host_runtime_env_file "$BACKEND_RUNTIME_DIR")" \
     && HOST_DATABASE_TARGET_ID="$(get_database_target_id_from_env_file "$HOST_RUNTIME_ENV_FILE")"; then
-    if run_host_pm2 "$HOST_RUNTIME_ENV_FILE" "$HOST_RUNTIME_ID" startOrReload ecosystem.config.js --update-env 2>/dev/null; then
-        log "  ✅ PM2 重启成功"
+    # 关键：pm2 7.x 的 restart / start(已存在) 不会用 --update-env 刷新应用 env，
+    # DEPLOY_RUNTIME_ID 会一直停留在上次发布的旧值，导致 select_public_runtime 永远不匹配、
+    # 自动角色刷新被跳过（即"每次部署后必须手动确认"的根因）。
+    # 必须先 delete 再 start，强制 pm2 重新读取 ecosystem.config.js，
+    # 使本次 DEPLOY_RUNTIME_ID（由 run_host_pm2 注入）真正进入 worker 进程环境。
+    run_host_pm2 "$HOST_RUNTIME_ENV_FILE" "$HOST_RUNTIME_ID" delete duban-server 2>/dev/null || true
+    if run_host_pm2 "$HOST_RUNTIME_ENV_FILE" "$HOST_RUNTIME_ID" start ecosystem.config.js --update-env 2>/dev/null; then
+        log "  ✅ PM2 重启成功（已应用新运行时环境变量）"
         host_runtime_updated=1
     else
-        log "  ⚠ PM2 启动..."
-        if run_host_pm2 "$HOST_RUNTIME_ENV_FILE" "$HOST_RUNTIME_ID" start ecosystem.config.js --update-env 2>/dev/null; then
-            log "  ✅ PM2 启动成功"
-            host_runtime_updated=1
-        else
-            log "  ❌ PM2 启动失败"
-        fi
+        log "  ❌ PM2 启动失败"
     fi
 else
     log "  ⚠ 无法解析宿主机运行环境及数据库目标，跳过宿主机 PM2 更新"
@@ -289,7 +289,11 @@ if command -v docker >/dev/null 2>&1 \
     if docker exec \
         -e DEPLOY_RUNTIME_ID="$CONTAINER_RUNTIME_ID" \
         "$APP_CONTAINER" \
-        pm2 startOrReload /app/server/ecosystem.config.js --update-env 2>/dev/null; then
+        pm2 restart /app/server/ecosystem.config.js --update-env 2>/dev/null \
+        || docker exec \
+        -e DEPLOY_RUNTIME_ID="$CONTAINER_RUNTIME_ID" \
+        "$APP_CONTAINER" \
+        pm2 start /app/server/ecosystem.config.js --update-env 2>/dev/null; then
         if CONTAINER_DATABASE_TARGET_ID="$(get_container_database_target_id)"; then
             log "  ✅ 容器后端已部署并重启"
             container_runtime_updated=1
@@ -298,7 +302,7 @@ if command -v docker >/dev/null 2>&1 \
             exit 1
         fi
     else
-        log "  ❌ 容器后端重启失败"
+        log "  ❌ 容器后端重启/启动失败"
         exit 1
     fi
 fi

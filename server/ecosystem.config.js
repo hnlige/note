@@ -14,6 +14,10 @@ module.exports = {
       PORT: 3001,
       RATE_LIMIT_PER_MINUTE: '1200',
       DB_POOL_SIZE: '30',
+      // 部署指纹：由 deploy-server.sh 的 run_host_pm2 通过 shell 注入，
+      // 这里显式声明后才会真正透传到 duban-server 进程环境，
+      // 否则 health.runtimeId 恒为 local-runtime，导致 select_public_runtime 永远不匹配、自动角色刷新被跳过。
+      DEPLOY_RUNTIME_ID: process.env.DEPLOY_RUNTIME_ID,
     },
     // 监听文件变化自动重启（生产环境关闭）
     watch: false,
