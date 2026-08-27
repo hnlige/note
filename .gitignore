@@ -63,7 +63,10 @@ validate-workbench-follower-report.md
 
 # Historical reports, product drafts, and browser fixture captures
 docs/
-mobile/
+# 仅忽略仓库根目录的 mobile 目录（小程序等），不能误伤 src/pages/Mobile；
+# core.ignorecase=true 时 `mobile/` 会连 src/pages/Mobile 一起吞掉。
+/mobile/
+.wechat-m-debug/
 /*.yaml
 !/pnpm-lock.yaml
 batch.json
