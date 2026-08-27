@@ -214,15 +214,26 @@ export const MobileItemDetail: React.FC = () => {
   };
 
   // ─── 延期 ───
+  const autoOpenFeedbackRef = React.useRef(false);
   const handleExtension = async (payload: { newDeadline: string; reason: string }) => {
     if (!item) return;
-    const ok = await postponeItem(item.id, payload.reason, payload.newDeadline, 'MENU_MY_ITEMS');
-    if (ok) {
-      showToast('延期申请已提交', 'success');
+    const result = await postponeItem(item.id, payload.reason, payload.newDeadline, 'MENU_MY_ITEMS');
+    if (result.ok) {
+      // 超时事项延期成功后直接引导继续反馈，避免用户再手动找反馈入口。
+      autoOpenFeedbackRef.current = true;
+      showToast('延期申请已提交，请继续反馈进展', 'success');
     } else {
-      showToast('延期申请失败：仅超期事项可申请延期', 'error');
+      showToast(result.error || '延期申请失败，请稍后重试', 'error');
     }
     await fetchDetail();
+  };
+
+  const closeExtensionModal = () => {
+    setModal(null);
+    if (autoOpenFeedbackRef.current) {
+      autoOpenFeedbackRef.current = false;
+      setModal('feedback');
+    }
   };
 
   // ─── 申请完成 ───
@@ -595,7 +606,7 @@ export const MobileItemDetail: React.FC = () => {
         open={modal === 'extension'}
         item={item}
         deadline={currentOwnerSubTask?.plannedCompletionDate || currentOwnerSubTask?.deadline || item?.deadline}
-        onClose={() => setModal(null)}
+        onClose={closeExtensionModal}
         onSubmit={handleExtension}
       />
       <CompleteModal open={modal === 'complete'} onClose={() => setModal(null)} onSubmit={handleComplete} />
