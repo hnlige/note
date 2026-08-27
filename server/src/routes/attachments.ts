@@ -5,7 +5,8 @@ import { AuthenticatedRequest } from './auth.middleware';
 import { getCurrentAccessContext } from './access.context';
 import { filterItemsByAccess } from './access.policy';
 import { canUseItemAction } from './items.policy';
-import { ensureItemActorAllowed, resolveItemPageAuth } from './items';
+import { getItemIdentityBackfill } from './items.backfill';
+import { ensureItemActorAllowed, normalizeItemJsonFields, resolveItemPageAuth } from './items';
 import { getMaxAttachmentBytes, resolveAttachmentUrl, sanitizeAttachmentName, uploadAttachment } from '../storage/cos';
 
 export const attachmentsRouter = Router();
@@ -49,7 +50,14 @@ attachmentsRouter.post(
       if (!accessContext?.currentUser || !accessContext.currentRole) {
         return res.status(403).json({ error: '当前账号角色配置异常，请联系管理员' });
       }
-      if (filterItemsByAccess([item] as any, accessContext).length === 0) {
+      // 线上 items 的 owner_ids/follower_ids 等列是 TEXT，查询返回 JSON 字符串；
+      // 列表/详情路由都会先规整字段再做行级过滤，附件路由必须保持同一口径，
+      // 否则多责任人事项里非第一责任人的成员会被误判为无权上传。
+      const normalizedItem = normalizeItemJsonFields(item as any);
+      // 与事项列表/详情保持一致：历史数据可能只有责任人姓名，先以内存方式补齐身份再做行级权限判断。
+      const identityBackfill = getItemIdentityBackfill(normalizedItem, accessContext.users as any);
+      const permissionItem = identityBackfill ? { ...normalizedItem, ...identityBackfill } : normalizedItem;
+      if (filterItemsByAccess([permissionItem] as any, accessContext).length === 0) {
         return res.status(403).json({ error: '当前账号无权上传该事项附件' });
       }
       if (!canUseItemAction({
@@ -60,7 +68,7 @@ attachmentsRouter.post(
       })) {
         return res.status(403).json({ error: '当前角色无上传附件权限' });
       }
-      if (!ensureItemActorAllowed(accessContext, 'FEEDBACK_ITEM', item as any, res)) return;
+      if (!ensureItemActorAllowed(accessContext, 'FEEDBACK_ITEM', permissionItem as any, res)) return;
 
       const attachment = await uploadAttachment({
         itemId: item.id,
