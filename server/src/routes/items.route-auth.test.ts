@@ -101,6 +101,69 @@ test('item route requires every action resolved for pending composite feedback',
   assert.equal(state.status, undefined);
 });
 
+test('signing a pending item requires a plan only when no required date exists', async () => {
+  const { getPlannedCompletionDateForSign, hasPlannedCompletionDateForSign } = await import('./items');
+  const actor = { id: 'owner-1', name: '责任人' };
+  const item = { status: 'PENDING', ownerId: 'owner-1', plannedCompletionDate: '' };
+
+  assert.equal(hasPlannedCompletionDateForSign(item, actor, {}), false);
+  assert.equal(hasPlannedCompletionDateForSign(item, actor, { plannedCompletionDate: '2026-08-30' }), true);
+  assert.equal(hasPlannedCompletionDateForSign(
+    { ...item, requiredCompletionDate: '2026-08-30' },
+    actor,
+    {},
+  ), true);
+  assert.equal(getPlannedCompletionDateForSign(
+    { ...item, requiredCompletionDate: '2026-08-30' },
+    actor,
+    { plannedCompletionDate: '2026-09-01' },
+  ), '2026-08-30', 'required completion date must take precedence over owner input');
+});
+
+test('owner activity advances the matching pending subtask after parent already started', async () => {
+  const { applyOwnerActivitySubTaskUpdate } = await import('./items');
+  const item = {
+    status: 'EXECUTING',
+    subTasks: [
+      { id: 'sub-1', assigneeId: 'owner-1', assigneeName: '魏红义', status: 'PENDING', plannedCompletionDate: '' },
+      { id: 'sub-2', assigneeId: 'owner-2', assigneeName: '其他责任人', status: 'EXECUTING', plannedCompletionDate: '2026/08/30' },
+    ],
+  };
+
+  const updated = applyOwnerActivitySubTaskUpdate(item, { id: 'owner-1', name: '魏红义' }, {
+    plannedCompletionDate: '2026/08/31',
+  });
+
+  assert.equal(updated?.[0].status, 'EXECUTING');
+  assert.equal(updated?.[0].plannedCompletionDate, '2026/08/31');
+  assert.equal(updated?.[0].deadline, '2026/08/31');
+  assert.equal(updated?.[1].status, 'EXECUTING');
+  assert.equal(updated?.[1].plannedCompletionDate, '2026/08/30');
+});
+
+test('multi-owner signing checks only the current owner subtask date', async () => {
+  const { hasPlannedCompletionDateForSign } = await import('./items');
+  const item = {
+    status: 'PENDING',
+    subTasks: [
+      { assigneeId: 'owner-1', status: 'PENDING', plannedCompletionDate: '' },
+      { assigneeId: 'owner-2', status: 'PENDING', plannedCompletionDate: '2026-08-30' },
+    ],
+  };
+
+  assert.equal(hasPlannedCompletionDateForSign(item, { id: 'owner-1' }, {}), false);
+  assert.equal(hasPlannedCompletionDateForSign(item, { id: 'owner-1' }, { plannedCompletionDate: '2026-08-31' }), true);
+  assert.equal(hasPlannedCompletionDateForSign({
+    ...item,
+    subTasks: [
+      { assigneeId: 'owner-1', status: 'PENDING', plannedCompletionDate: '', requiredCompletionDate: '2026-08-30' },
+      item.subTasks[1],
+    ],
+  }, { id: 'owner-1' }, {}), true);
+  assert.equal(hasPlannedCompletionDateForSign(item, { id: 'owner-2' }, {}), true);
+  assert.equal(hasPlannedCompletionDateForSign({ ...item, plannedCompletionDate: '2026-09-01' }, { id: 'owner-1' }, {}), false);
+});
+
 test('item route transition guard returns 400 before persistence for invalid transitions', async () => {
   const itemsModule = await import('./items');
   const ensureValidTransition = (itemsModule as typeof itemsModule & {
@@ -241,6 +304,28 @@ test('feedback action rejects owner whose subtask is overdue', async () => {
   assert.equal(result, false);
   assert.equal(state.status, 400);
   assert.equal((state.body as { error?: string })?.error, '子任务已超时，请先申请延期后再反馈');
+});
+
+test('feedback action rejects owner whose subtask is still pending sign-off', async () => {
+  const { ensureItemActorAllowed } = await import('./items');
+  const state: { status?: number; body?: unknown } = {};
+  const response = {
+    status(code: number) { state.status = code; return this; },
+    json(body: unknown) { state.body = body; return this; },
+  };
+  const accessContext = {
+    currentUser: { id: 'owner-1', name: '责任人', role: 'OWNER', roleId: 'r-owner' },
+    currentRole: { permissions: [], allowedActions: ['READ', 'FEEDBACK_ITEM'] },
+  };
+  const pendingItem = {
+    ownerIds: ['owner-1'],
+    ownerNames: ['责任人'],
+    subTasks: [{ id: 'st-1', assigneeId: 'owner-1', assigneeName: '责任人', status: 'PENDING' }],
+  };
+
+  assert.equal(ensureItemActorAllowed(accessContext, 'FEEDBACK_ITEM', pendingItem, response), false);
+  assert.equal(state.status, 400);
+  assert.equal((state.body as { error?: string })?.error, '请先签收并填写计划完成日期后再反馈');
 });
 
 test('feedback action allows owner whose subtask is executing', async () => {

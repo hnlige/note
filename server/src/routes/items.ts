@@ -3,9 +3,10 @@ import { Router, Request, Response } from 'express';
 import { getDb } from '../db';
 import { getItemIdentityBackfill } from './items.backfill';
 import { AuthenticatedRequest } from './auth.middleware';
-import { canManageItems, canUseItemAction, canUseSubTaskMutationAction, getActionForItemUpdate, getInvalidItemUpdateFields, getRequiredActionsForItemUpdate, hasFollowerSelectionPayload, isFollowerCandidateUser, isSubTaskOnlyUpdatePayload, mapTimelineNodeToAction, normalizeFollowerSelection, sanitizeItemUpdates, validateItemStatusTransition } from './items.policy';
+import { canManageItems, canUseItemAction, canUseSubTaskMutationAction, getActionForItemUpdate, getInvalidItemUpdateFields, getRequiredActionsForItemUpdate, hasFollowerSelectionPayload, isFollowerCandidateUser, isFollowerFeedbackUpdatePayload, isSubTaskOnlyUpdatePayload, mapTimelineNodeToAction, normalizeFollowerSelection, sanitizeItemUpdates, validateItemStatusTransition } from './items.policy';
 import { computeSignOffStatus } from './sign-off';
 import { aggregateSubTaskStatus, derivePersistedItemStatus, getEffectiveItemStatus, shouldStartPendingItemAfterOwnerActivity } from '../lib/item-effective-status';
+import { computeWorkbenchOwnerFlags } from '../lib/workbench-flags';
 import { buildItemAccessWhere, filterItemsByAccess, type AccessItemLike } from './access.policy';
 import { ensureNotificationIdentityColumns } from './notification.schema';
 import { buildCreateItemMessages, buildDelayMessages, buildFeedbackMessages, buildSuspendMessages, buildShareMessages } from './item-workflow';
@@ -45,6 +46,26 @@ function normalizeIdentity(value?: string | null): string {
   return String(value || '').trim().toLowerCase();
 }
 
+type ImportDepartmentLike = { id: string; name?: string | null };
+type ImportOwnerLike = { deptId?: string | null };
+
+/**
+ * 导入时部门字段只携带名称；同名部门在不同组织/院区下可能对应多个 ID。
+ * 不能用 Array.find 取第一条，否则数据库返回顺序变化会把合法成员误判为跨部门。
+ */
+export function isOwnerAssignedToDepartmentName(
+  owner: ImportOwnerLike | null | undefined,
+  departmentName: string,
+  departments: readonly ImportDepartmentLike[],
+): boolean {
+  const ownerDeptId = String(owner?.deptId || '').trim();
+  if (!ownerDeptId) return false;
+  const normalizedName = normalizeIdentity(departmentName);
+  return departments.some((department) =>
+    normalizeIdentity(department.name) === normalizedName && String(department.id) === ownerDeptId,
+  );
+}
+
 function getActorIdentityKeys(actor: ItemActor): string[] {
   return [...new Set([actor.id, actor.name, actor.username].map(normalizeIdentity).filter(Boolean))];
 }
@@ -52,6 +73,74 @@ function getActorIdentityKeys(actor: ItemActor): string[] {
 function identityMatches(value: unknown, identities: string[]): boolean {
   const normalized = typeof value === 'string' ? normalizeIdentity(value) : '';
   return Boolean(normalized && identities.includes(normalized));
+}
+
+/**
+ * 责任人申请延期时，将其本人子任务同步置为 DELAYED 并更新计划/截止日期。
+ * 找不到本人子任务或未做任何变更时返回 null，由调用方保持客户端提交原样。
+ */
+export function buildDelayActorSubTasks(
+  subTasks: unknown,
+  actorIdentityKeys: string[],
+  plannedCompletionDateText: string,
+): Array<Record<string, unknown>> | null {
+  if (!Array.isArray(subTasks) || subTasks.length === 0) return null;
+  let touched = false;
+  const nextSubTasks = subTasks.map((task: any) => {
+    if (!identityMatches(task?.assigneeId, actorIdentityKeys) && !identityMatches(task?.assigneeName, actorIdentityKeys)) {
+      return task;
+    }
+    touched = true;
+    return { ...task, status: 'DELAYED', plannedCompletionDate: plannedCompletionDateText, deadline: plannedCompletionDateText };
+  });
+  return touched ? nextSubTasks : null;
+}
+
+/** 客户端时间轴里是否已携带 DELAY 节点（此时服务端不再重复插入延期节点）。 */
+export function hasDelayTimelineNode(nodes: unknown): boolean {
+  return Array.isArray(nodes) && nodes.some((node: any) => node?.type === 'DELAY');
+}
+
+/**
+ * 获取当前责任人对应的子任务，兼容 ID、姓名和账号三种身份标识。
+ */
+function getActorSubTask(item: Record<string, unknown>, actor: ItemActor): Record<string, unknown> | undefined {
+  const actorIdentityKeys = getActorIdentityKeys(actor);
+  return asArrayValue<Record<string, unknown>>(item.subTasks).find((task) =>
+    identityMatches(task.assigneeId, actorIdentityKeys) ||
+    identityMatches(task.assigneeName, actorIdentityKeys),
+  );
+}
+
+/**
+ * 签收时使用的计划完成日期：跟进人给出的要求日期优先，未填写时才使用责任人的计划日期。
+ */
+export function getPlannedCompletionDateForSign(
+  item: Record<string, unknown>,
+  actor: ItemActor,
+  payload: Record<string, unknown> = {},
+): string {
+  const actorTask = getActorSubTask(item, actor);
+  const requiredDate = String(actorTask?.requiredCompletionDate || item.requiredCompletionDate || '').trim();
+  if (requiredDate) return requiredDate;
+
+  const payloadDate = typeof payload.plannedCompletionDate === 'string'
+    ? payload.plannedCompletionDate.trim()
+    : '';
+  if (actorTask) return payloadDate || String(actorTask.plannedCompletionDate || '').trim();
+  return payloadDate || String(item.plannedCompletionDate || '').trim();
+}
+
+/**
+ * 签收前的计划完成日期门槛。
+ * 有要求完成日期时直接以要求日期签收；否则责任人必须补填自己的计划完成日期。
+ */
+export function hasPlannedCompletionDateForSign(
+  item: Record<string, unknown>,
+  actor: ItemActor,
+  payload: Record<string, unknown> = {},
+): boolean {
+  return Boolean(getPlannedCompletionDateForSign(item, actor, payload));
 }
 
 const SERVER_MANAGED_TIMELINE_TYPES = new Set(['APPROVE', 'REJECT', 'STATUS']);
@@ -196,7 +285,13 @@ function ensureItemActionAllowed(
     }
     return true;
   }
-  if (!canUseItemAction({ role: accessContext.currentUser.role, roleConfig: accessContext.currentRole, pageAuth, action })) {
+  const canUseAction = canUseItemAction({ role: accessContext.currentUser.role, roleConfig: accessContext.currentRole, pageAuth, action });
+  // 跟进人反馈历史上使用 CHANGE_ITEM 持久化；若线上旧角色只保留 FEEDBACK_ITEM，
+  // 仍按“反馈”语义放行，避免角色刷新前出现“无 CHANGE_ITEM”阻断真实业务。
+  const canUseFollowerFeedbackFallback = action === 'CHANGE_ITEM'
+    && isFollowerFeedbackUpdatePayload(payload)
+    && canUseItemAction({ role: accessContext.currentUser.role, roleConfig: accessContext.currentRole, pageAuth, action: 'FEEDBACK_ITEM' });
+  if (!canUseAction && !canUseFollowerFeedbackFallback) {
     res.status(403).json({ error: `当前角色无${action}操作权限` });
     return false;
   }
@@ -266,7 +361,7 @@ function asArrayValue<T = unknown>(value: unknown): T[] {
   return Array.isArray(normalized) ? normalized as T[] : [];
 }
 
-function normalizeItemJsonFields<T extends Record<string, any>>(item: T): T {
+export function normalizeItemJsonFields<T extends Record<string, any>>(item: T): T {
   return {
     ...item,
     ownerIds: asStringList(item.ownerIds),
@@ -366,7 +461,7 @@ export function buildOwnerPairs(ownerIds: string[], ownerNames: string[]): Array
  * 单责任人（≤1）不拆分，返回空数组（沿用原「父级即责任人」展示方式）。
  * 日期拆分：
  * - requiredCompletionDate：要求完成日期（跟进人统一填写，全事项通用，责任人不可修改）
- * - plannedCompletionDate：计划完成日期（责任人签收时填写；缺省回退到要求完成日期）
+ * - plannedCompletionDate：计划完成日期（责任人签收时填写；不从要求完成日期复制）
  * - actualCompletionDate：实际完成日期（办结审批后由跟进人回填，初始为空）
  */
 export function buildAutoSubTasks(
@@ -377,7 +472,10 @@ export function buildAutoSubTasks(
 ): any[] {
   if (pairs.length <= 1) return [];
   const required = opts.requiredCompletionDate || '';
-  const planned = opts.plannedCompletionDate || required || '';
+  // 多责任人场景下，要求完成日期只是跟进人给出的统一截止依据，
+  // 不能提前写入每个责任人的计划日期，否则会把“已填写计划”误判为已签收，
+  // 也会让后续某一责任人的计划日期串到其他责任人。
+  const planned = opts.plannedCompletionDate || '';
   return pairs.map((pair) => ({
     id: uuid(),
     title: opts.title,
@@ -434,7 +532,7 @@ function syncParentStatusToSubTasks(item: any, targetStatus: 'DISABLED' | 'EXECU
   });
 }
 
-function applyOwnerActivitySubTaskUpdate(item: any, actor: ItemActor, payload: Record<string, unknown>): any[] | undefined {
+export function applyOwnerActivitySubTaskUpdate(item: any, actor: ItemActor, payload: Record<string, unknown>): any[] | undefined {
   const subTasks = asArrayValue<Record<string, unknown>>(item.subTasks);
   if (subTasks.length === 0) return undefined;
 
@@ -515,6 +613,10 @@ export function ensureItemActorAllowed(
       res.status(403).json({ error: '仅事项责任人可执行该操作' });
       return false;
     }
+    if (action === 'SIGN_ITEM' && !hasPlannedCompletionDateForSign(item, accessContext.currentUser, payload)) {
+      res.status(400).json({ error: '签收前请填写计划完成日期' });
+      return false;
+    }
     // 子任务已超时：责任人在延期申请通过前不得提交反馈，需先申请延期。
     if (action === 'FEEDBACK_ITEM') {
       const actorIdentityKeys = accessContext.currentUser
@@ -524,6 +626,10 @@ export function ensureItemActorAllowed(
         identityMatches(task?.assigneeId, actorIdentityKeys) ||
         identityMatches(task?.assigneeName, actorIdentityKeys),
       );
+      if (ownerSubTask?.status === 'PENDING') {
+        res.status(400).json({ error: '请先签收并填写计划完成日期后再反馈' });
+        return false;
+      }
       if (ownerSubTask?.status === 'OVERDUE') {
         res.status(400).json({ error: '子任务已超时，请先申请延期后再反馈' });
         return false;
@@ -586,6 +692,7 @@ itemsRouter.get('/', async (req: AuthenticatedRequest, res: Response) => {
       followerId: itemsTable.followerId,
       followerIds: itemsTable.followerIds,
       followerName: itemsTable.followerName,
+      subTasks: itemsTable.subTasks,
       sharedWith: itemsTable.sharedWith,
       deletedAt: itemsTable.deletedAt,
     }, { includeDeleted, onlyDeleted: isRecycleBin });
@@ -629,8 +736,13 @@ itemsRouter.get('/', async (req: AuthenticatedRequest, res: Response) => {
         attachments: resolveAttachmentUrls(asArrayValue(n.attachments)),
       }));
       const signOff = computeSignOffStatus(item, fullTimeline);
+      // 用【完整时间轴】算好责任人签收 / 反馈权威标记，供前端工作台五态指标直接使用，
+      // 避免前端依赖被 slice(-5) 截断的展示时间轴重算而导致计数错误或跨刷新不稳定。
+      const { subTasks: workbenchSubTasks, hasFeedback } = computeWorkbenchOwnerFlags(item, fullTimeline);
       return {
         ...item,
+        subTasks: workbenchSubTasks,
+        hasFeedback,
         meetingName: item.meetingSource || '',
         raiseDate: item.raiseDate ? formatDateOnly(item.raiseDate) : (item.createdAt ? formatDateOnly(item.createdAt) : ''),
         deadline: item.deadline ? formatDateOnly(item.deadline) : '',
@@ -803,7 +915,8 @@ itemsRouter.post('/', requireItemWritePermission, async (req: AuthenticatedReque
       title,
       content,
       status: 'PENDING',
-      deadline: deadline ? new Date(deadline) : null,
+      // 要求完成日期是事项级统一截止依据；客户端未显式传兼容字段时也要落到 deadline。
+      deadline: deadline ? new Date(deadline) : (requiredCompletionDate ? new Date(requiredCompletionDate) : null),
       issuerId,
       issuerName,
       issuerAccount,
@@ -874,7 +987,7 @@ itemsRouter.post('/', requireItemWritePermission, async (req: AuthenticatedReque
       content,
       status: 'PENDING',
       effectiveStatus: 'PENDING',
-      deadline: deadline || '',
+      deadline: deadline || (requiredCompletionDate || ''),
       issuerId: issuerId || undefined,
       issuerName,
       issuerAccount,
@@ -1007,9 +1120,6 @@ itemsRouter.post('/batch', requireItemWritePermission, async (req: Authenticated
           continue;
         }
 
-        const matchedDepartments = deptNames.map((name) =>
-          allDepartments.find((dept: any) => normalizeIdentity(dept.name) === normalizeIdentity(name))
-        ).filter(Boolean) as any[];
         const matchedOwners = ownerNames.map((name) =>
           allUsers.find((user: any) =>
             normalizeIdentity(user.name) === normalizeIdentity(name) ||
@@ -1035,10 +1145,9 @@ itemsRouter.post('/batch', requireItemWritePermission, async (req: Authenticated
 
           const ownerDeptPairMismatches = matchedOwners
             .map((owner, index) => ({ owner, index }))
-            .filter(({ owner, index }) => {
-              const dept = matchedDepartments[index];
-              return !owner || !dept || !owner.deptId || String(owner.deptId) !== String(dept.id);
-            });
+            .filter(({ owner, index }) =>
+              !owner || !isOwnerAssignedToDepartmentName(owner, deptNames[index], allDepartments),
+            );
           if (ownerDeptPairMismatches.length > 0) {
             const mismatchDetails = ownerDeptPairMismatches.map(({ owner, index }) => {
               const deptName = deptNames[index] || '未知部门';
@@ -1048,9 +1157,8 @@ itemsRouter.post('/batch', requireItemWritePermission, async (req: Authenticated
             continue;
           }
         } else {
-          const dept = matchedDepartments[0];
           const owner = (matchedOwners.filter(Boolean) as any[])[0];
-          if (dept && owner && (!owner.deptId || String(owner.deptId) !== String(dept.id))) {
+          if (owner && !isOwnerAssignedToDepartmentName(owner, deptNames[0], allDepartments)) {
             results.push({ row, serialNo, success: false, error: `「${deptNames[0]}」中并无成员「${owner.name || owner.username}」` });
             continue;
           }
@@ -1233,11 +1341,14 @@ itemsRouter.put('/:id', async (req: AuthenticatedRequest & Request<{ id: string 
 
     if (!currentItem) return res.status(404).json({ error: '事项不存在' });
     const normalizedCurrentItem = normalizeItemJsonFields(currentItem);
+    // 与列表/详情一致：历史数据可能只有责任人/跟进人姓名，先以内存方式补齐身份再做行级权限判断。
+    const identityBackfillForUpdate = getItemIdentityBackfill(normalizedCurrentItem, accessContext.users as any);
+    const permissionCurrentItem = identityBackfillForUpdate ? { ...normalizedCurrentItem, ...identityBackfillForUpdate } : normalizedCurrentItem;
 
     // 数据权限隔离：正常事项按默认范围过滤；回收站恢复/彻底删除需显式纳入软删除数据。
     const isRecycleBinMutation = getDeclaredItemPageAuth(req) === 'MENU_RECYCLE_BIN';
     if (filterItemsByAccess(
-      [normalizedCurrentItem as AccessItemLike],
+      [permissionCurrentItem as AccessItemLike],
       accessContext,
       { includeDeleted: isRecycleBinMutation, onlyDeleted: isRecycleBinMutation },
     ).length === 0) {
@@ -1252,7 +1363,7 @@ itemsRouter.put('/:id', async (req: AuthenticatedRequest & Request<{ id: string 
     // 状态流转前置校验：拦截非法/伪造的状态切换，避免绕过业务规则。
     if (!ensureValidItemStatusTransition(normalizedCurrentItem, req.body || {}, res)) return;
 
-    const actorFlags = getItemActorFlags(accessContext, normalizedCurrentItem);
+    const actorFlags = getItemActorFlags(accessContext, permissionCurrentItem);
     const incomingTimeline = Array.isArray(req.body?.timeline) ? req.body.timeline : [];
     const isFollowerTimelineFeedback = incomingTimeline.length > 0 && actorFlags.isFollower && !actorFlags.isOwner && !actorFlags.hasGlobalPrivilege;
     const existingTimeline = incomingTimeline.length > 0
@@ -1321,9 +1432,18 @@ itemsRouter.put('/:id', async (req: AuthenticatedRequest & Request<{ id: string 
     const actions = [...new Set(requestedActions.map((action) =>
       action === 'FEEDBACK_ITEM' && isFollowerTimelineFeedback ? 'CHANGE_ITEM' : action
     ))];
-    if (!ensureItemActionsAllowed(accessContext, actions, res, req.body || {}, getDeclaredItemPageAuth(req))) return;
+    const signPayload = { ...(req.body || {}) };
+    if (actions.includes('SIGN_ITEM')) {
+      const signDate = getPlannedCompletionDateForSign(normalizedCurrentItem, accessContext.currentUser || req.authUser, signPayload);
+      if (signDate) {
+        // 要求完成日期是跟进人下发的统一截止依据，责任人不能用自定义日期覆盖它。
+        signPayload.plannedCompletionDate = signDate;
+        signPayload.deadline = signDate;
+      }
+    }
+    if (!ensureItemActionsAllowed(accessContext, actions, res, signPayload, getDeclaredItemPageAuth(req))) return;
     for (const action of actions) {
-      if (!ensureItemActorAllowed(accessContext, action, normalizedCurrentItem, res, req.body || {})) return;
+      if (!ensureItemActorAllowed(accessContext, action, permissionCurrentItem, res, signPayload)) return;
     }
 
     // 回收站内的恢复/删除操作：非管理员仅可操作本人删除的事项，避免越权处置他人删除项。
@@ -1335,11 +1455,17 @@ itemsRouter.put('/:id', async (req: AuthenticatedRequest & Request<{ id: string 
     }
 
     if (actions.includes('DELAY_ITEM') && normalizedCurrentItem.status !== 'OVERDUE') {
-      return res.status(400).json({ error: '仅已超时的事项允许申请延期' });
+      // 历史卡死数据自愈：父级已被置为 DELAYED 但本人子任务仍是 OVERDUE 时，
+      // 允许责任人重新提交延期（本次会补齐子任务状态），否则反馈会被永久拦截。
+      const delayRetrySubTask = getActorSubTask(normalizedCurrentItem, accessContext.currentUser || req.authUser);
+      const delayRetryAllowed = normalizedCurrentItem.status === 'DELAYED' && delayRetrySubTask?.status === 'OVERDUE';
+      if (!delayRetryAllowed) {
+        return res.status(400).json({ error: '仅已超时的事项允许申请延期' });
+      }
     }
 
-    const updates = sanitizeItemUpdates(req.body || {});
-    const nextStatus = typeof req.body?.status === 'string' ? req.body.status : undefined;
+    const updates = sanitizeItemUpdates(signPayload);
+    const nextStatus = typeof signPayload?.status === 'string' ? signPayload.status : undefined;
 
     // 软删除/恢复的不变量必须由服务端生成，不能信任客户端伪造 deletedAt/deletedById/originalStatus。
     // 删除时保留原状态；恢复时严格使用原状态，并清理回收站元数据。
@@ -1364,16 +1490,30 @@ itemsRouter.put('/:id', async (req: AuthenticatedRequest & Request<{ id: string 
     const ownerActivityTimelineTypes = trustedTimelineNodes
       .filter((node) => node.type === 'SIGN' || node.type === 'FEEDBACK')
       .map((node) => typeof node.type === 'string' ? node.type : undefined);
+    // 多责任人签收/反馈只属于当前责任人的子任务。客户端即使携带了兼容字段
+    // plannedCompletionDate/deadline，也不能把某一责任人的日期写到事项父级。
+    if (actorFlags.isOwner && Array.isArray(normalizedCurrentItem.subTasks)
+      && normalizedCurrentItem.subTasks.length > 1 && ownerActivityTimelineTypes.length > 0) {
+      delete updates.plannedCompletionDate;
+      delete updates.deadline;
+    }
     const shouldStartPendingItem = shouldStartPendingItemAfterOwnerActivity(
       normalizedCurrentItem.status,
       ownerActivityTimelineTypes,
     );
-    if (shouldStartPendingItem) {
-      const updatedSubTasks = applyOwnerActivitySubTaskUpdate(
-        normalizedCurrentItem,
-        accessContext.currentUser || req.authUser,
-        req.body || {},
-      );
+    const hasOwnerSubTasks = actorFlags.isOwner
+      && Array.isArray(normalizedCurrentItem.subTasks)
+      && normalizedCurrentItem.subTasks.length > 0;
+    // 父事项可能已因其他责任人签收而处于 EXECUTING；当前责任人的 PENDING 子任务
+    // 仍需在本次 SIGN/FEEDBACK 中独立推进，不能依赖父级状态。
+    if (ownerActivityTimelineTypes.length > 0 && (shouldStartPendingItem || hasOwnerSubTasks)) {
+      const updatedSubTasks = hasOwnerSubTasks
+        ? applyOwnerActivitySubTaskUpdate(
+            normalizedCurrentItem,
+            accessContext.currentUser || req.authUser,
+            signPayload,
+          )
+        : undefined;
       if (updatedSubTasks) {
         updates.subTasks = updatedSubTasks;
       }
@@ -1381,7 +1521,7 @@ itemsRouter.put('/:id', async (req: AuthenticatedRequest & Request<{ id: string 
       updates.status = derivePersistedItemStatus({
         currentStatus: normalizedCurrentItem.status,
         requestedStatus: typeof updates.status === 'string' ? updates.status as any : undefined,
-        subTasks: updatedSubTasks as any,
+        subTasks: (updatedSubTasks || normalizedCurrentItem.subTasks) as any,
         ownerActivityTimelineTypes,
       });
     } else if (actions.includes('SIGN_ITEM') && typeof req.body?.status === 'string') {
@@ -1721,7 +1861,10 @@ itemsRouter.put('/:id', async (req: AuthenticatedRequest & Request<{ id: string 
       } as any);
     }
 
-    if (nextStatus === 'DELAYED' && normalizedCurrentItem.status !== 'DELAYED') {
+    // 父级已 DELAYED 但本人子任务仍是 OVERDUE（历史卡死数据）时也允许进入延期分支补齐子任务。
+    const delayRetrySubTask = getActorSubTask(normalizedCurrentItem, accessContext.currentUser || req.authUser);
+    const delayedParentWithOverdueSubTask = normalizedCurrentItem.status === 'DELAYED' && delayRetrySubTask?.status === 'OVERDUE';
+    if (nextStatus === 'DELAYED' && (normalizedCurrentItem.status !== 'DELAYED' || delayedParentWithOverdueSubTask)) {
       const rawPlannedCompletionDate = typeof req.body?.plannedCompletionDate === 'string'
         ? req.body.plannedCompletionDate.trim()
         : (typeof req.body?.deadline === 'string' ? req.body.deadline.trim() : '');
@@ -1736,25 +1879,43 @@ itemsRouter.put('/:id', async (req: AuthenticatedRequest & Request<{ id: string 
       if (normalizedPlannedCompletionDate <= today) {
         return res.status(400).json({ error: '延期后的计划完成日期必须晚于今天' });
       }
+      const plannedCompletionDateText = formatDateOnly(plannedCompletionDate);
 
       // 自动引擎优先读取 plannedCompletionDate。同步兼容字段，避免下一轮被旧 deadline 覆盖为超期。
       updates.status = 'DELAYED';
       updates.plannedCompletionDate = plannedCompletionDate;
       updates.deadline = plannedCompletionDate;
 
+      // 事项带责任人子任务且客户端未显式提交子任务时，服务端必须把申请人本人的子任务
+      // 同步置为 DELAYED 并更新计划日期；否则子任务停留 OVERDUE，
+      // 反馈会被“子任务已超时”拦截，责任人会反复申请延期而无法继续反馈。
+      if (Array.isArray(normalizedCurrentItem.subTasks) && normalizedCurrentItem.subTasks.length > 0 && !Array.isArray(updates.subTasks)) {
+        const delayActorSubTasks = buildDelayActorSubTasks(
+          normalizedCurrentItem.subTasks,
+          getActorIdentityKeys(accessContext.currentUser || req.authUser),
+          plannedCompletionDateText,
+        );
+        if (delayActorSubTasks) {
+          updates.subTasks = delayActorSubTasks;
+        }
+      }
+
       const delayReason = incomingTimeline
         .map((node: any) => typeof node?.content === 'string' ? node.content.trim() : '')
         .find(Boolean) || '';
-      const plannedCompletionDateText = formatDateOnly(plannedCompletionDate);
-      await db.insert(timelineNodes).values({
-        id: uuid(),
-        itemId: normalizedCurrentItem.id,
-        type: 'DELAY',
-        user: req.authUser?.name || '系统',
-        actorUserId: req.authUser?.id || null,
-        content: `申请延期${delayReason ? `。原因：${delayReason}` : ''}，新计划完成日期：${plannedCompletionDateText}`,
-        timestamp: new Date(),
-      } as any);
+      // 客户端已随请求携带 DELAY 时间轴节点（含延期原因）时直接落库该节点，
+      // 不再重复插入服务端节点，避免时间轴出现两条延期记录。
+      if (!hasDelayTimelineNode(trustedTimelineNodes)) {
+        await db.insert(timelineNodes).values({
+          id: uuid(),
+          itemId: normalizedCurrentItem.id,
+          type: 'DELAY',
+          user: req.authUser?.name || '系统',
+          actorUserId: req.authUser?.id || null,
+          content: `申请延期${delayReason ? `。原因：${delayReason}` : ''}，新计划完成日期：${plannedCompletionDateText}`,
+          timestamp: new Date(),
+        } as any);
+      }
 
       const owners = getItemOwners(normalizedCurrentItem);
       const followers = getItemFollowers(normalizedCurrentItem);

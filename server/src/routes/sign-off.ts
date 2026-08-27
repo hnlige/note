@@ -42,6 +42,7 @@ interface SubTaskLike {
   assigneeId?: unknown;
   assigneeName?: unknown;
   status?: unknown;
+  plannedCompletionDate?: unknown;
 }
 
 function getItemOwners(item: OwnerLikeItem): Array<{ id?: string; name?: string }> {
@@ -91,8 +92,20 @@ function findOwnerSubTask(subTasks: SubTaskLike[], owner: { id?: string; name?: 
   return undefined;
 }
 
-function isSignedSubTaskStatus(status: unknown): boolean {
-  return typeof status === 'string' && status !== 'PENDING' && status !== 'DELETED';
+function isSignedSubTaskStatus(
+  task: SubTaskLike,
+  signedIds: ReadonlySet<string>,
+  signedNames: ReadonlySet<string>,
+): boolean {
+  const status = task.status;
+  if (typeof status !== 'string' || status === 'PENDING' || status === 'DELETED') return false;
+
+  // 正常签收以 SIGN 时间轴为准。历史数据若缺少 SIGN，但已有计划完成日期，
+  // 仍兼容视为已签收；没有 SIGN 且没有计划日期的 EXECUTING/OVERDUE，
+  // 通常是旧版“反馈自动签收”遗留，必须保留待签收状态。
+  if (typeof task.assigneeId === 'string' && signedIds.has(task.assigneeId)) return true;
+  if (typeof task.assigneeName === 'string' && signedNames.has(task.assigneeName.trim())) return true;
+  return Boolean(typeof task.plannedCompletionDate === 'string' && task.plannedCompletionDate.trim());
 }
 
 /**
@@ -116,7 +129,7 @@ export function computeSignOffStatus(item: OwnerLikeItem, timeline?: unknown): S
     if (ownerSubTask) {
       // 多责任人已拆分子任务时，子任务状态是签收事实的权威来源；
       // 时间轴只作审计留痕，不能覆盖仍处于 PENDING 的责任人子任务。
-      return isSignedSubTaskStatus(ownerSubTask.status);
+      return isSignedSubTaskStatus(ownerSubTask, signedIds, signedNamesWithoutActorId);
     }
 
     if (owner.id && signedIds.has(owner.id)) return true;
