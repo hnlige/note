@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { getEffectiveItemStatus, getEffectiveStatusForUserIdentity, getItemSignOffStatus, isItemOwnerForUser } from './item-format.ts';
+import { getEffectiveItemStatus, getEffectiveStatusForUserIdentity, getItemSignOffStatus, getMobileItemStatus, isItemOwnerForUser, isItemRelatedToUser } from './item-format.ts';
 import { SupervisionItem } from '../types';
 
 const baseItem: SupervisionItem = {
@@ -41,6 +41,15 @@ test('getEffectiveItemStatus keeps completed main item final even when a sub tas
     }),
     'COMPLETED',
   );
+});
+
+test('isItemRelatedToUser includes a read-only shared user for mobile list visibility', () => {
+  assert.equal(isItemRelatedToUser({
+    ...baseItem,
+    ownerId: 'other-owner',
+    followerId: 'other-follower',
+    sharedWith: [{ userId: 'shared-user', userName: '共享人员', sharedAt: '', sharedBy: '跟进人' }],
+  }, { id: 'shared-user', name: '共享人员', username: 'shared' }), true);
 });
 
 test('getEffectiveItemStatus 不再根据时间轴或子任务在前端重算父事项状态', () => {
@@ -132,6 +141,45 @@ test('identity helpers recognize owner by name when historical item lacks matchi
   assert.equal(getEffectiveStatusForUserIdentity(item, { id: '00001234', name: '黄志豪', username: 'huangzhihao' }), 'PENDING');
 });
 
+test('多责任人详情页按责任人独立展示：一人超期不影响另一人的待签收状态', () => {
+  const item = {
+    ...baseItem,
+    status: 'OVERDUE' as const,
+    ownerId: '',
+    ownerName: '',
+    ownerIds: ['owner-a', 'owner-b'],
+    ownerNames: ['责任人A', '责任人B'],
+    subTasks: [
+      {
+        id: 'sub-a',
+        parentItemId: 'item-1',
+        title: 'A 的子任务',
+        deadline: '2026/08/10',
+        plannedCompletionDate: '2026/08/10',
+        status: 'OVERDUE' as const,
+        assigneeId: 'owner-a',
+        assigneeName: '责任人A',
+        progress: 0,
+      },
+      {
+        id: 'sub-b',
+        parentItemId: 'item-1',
+        title: 'B 的子任务',
+        deadline: '2026/08/01',
+        requiredCompletionDate: '2026/08/01',
+        plannedCompletionDate: '',
+        status: 'PENDING' as const,
+        assigneeId: 'owner-b',
+        assigneeName: '责任人B',
+        progress: 0,
+      },
+    ],
+  };
+
+  assert.equal(getEffectiveStatusForUserIdentity(item, { id: 'owner-a', name: '责任人A', username: 'owner-a' }), 'OVERDUE');
+  assert.equal(getEffectiveStatusForUserIdentity(item, { id: 'owner-b', name: '责任人B', username: 'owner-b' }), 'PENDING');
+});
+
 test('getItemSignOffStatus 单责任人：未签收 / 已签收', () => {
   assert.deepEqual(getItemSignOffStatus({ ...baseItem, ownerName: '', ownerNames: ['张三'] }), { status: 'NOT_SIGNED', signedCount: 0, totalCount: 1 });
   assert.deepEqual(
@@ -149,13 +197,33 @@ test('getItemSignOffStatus 兼容缺少 SIGN 时间轴的历史子任务签收�
       ownerIds: ['u1', 'u2', 'u3'],
       ownerNames: ['张三', '李四', '王五'],
       subTasks: [
-        { id: 's1', parentItemId: 'item-1', title: '张三任务', deadline: '', status: 'OVERDUE', assigneeId: 'u1', assigneeName: '张三', progress: 0 },
-        { id: 's2', parentItemId: 'item-1', title: '李四任务', deadline: '', status: 'EXECUTING', assigneeId: 'u2', assigneeName: '李四', progress: 0 },
+        { id: 's1', parentItemId: 'item-1', title: '张三任务', deadline: '', plannedCompletionDate: '2026/08/01', status: 'OVERDUE', assigneeId: 'u1', assigneeName: '张三', progress: 0 },
+        { id: 's2', parentItemId: 'item-1', title: '李四任务', deadline: '', plannedCompletionDate: '2026/08/02', status: 'EXECUTING', assigneeId: 'u2', assigneeName: '李四', progress: 0 },
         { id: 's3', parentItemId: 'item-1', title: '王五任务', deadline: '', status: 'PENDING', assigneeId: 'u3', assigneeName: '王五', progress: 0 },
       ],
     }),
     { status: 'PARTIAL', signedCount: 2, totalCount: 3 },
   );
+});
+
+test('多责任人反馈自动推进但未 SIGN 且无计划日期时仍显示本人待签收', () => {
+  const item = {
+    ...baseItem,
+    status: 'EXECUTING' as const,
+    ownerId: '',
+    ownerName: '',
+    ownerIds: ['u1', 'u2'],
+    ownerNames: ['魏红义', '申林'],
+    subTasks: [
+      { id: 's1', parentItemId: 'item-1', title: '魏红义任务', deadline: '', status: 'EXECUTING' as const, assigneeId: 'u1', assigneeName: '魏红义', progress: 0 },
+      { id: 's2', parentItemId: 'item-1', title: '申林任务', deadline: '', status: 'EXECUTING' as const, assigneeId: 'u2', assigneeName: '申林', progress: 0 },
+    ],
+    timeline: [{ id: 't1', type: 'SIGN' as const, user: '魏红义', actorUserId: 'u1', content: '签收', timestamp: '' }],
+  };
+
+  assert.equal(getEffectiveStatusForUserIdentity(item, { id: 'u1', name: '魏红义', username: '' }), 'EXECUTING');
+  assert.equal(getEffectiveStatusForUserIdentity(item, { id: 'u2', name: '申林', username: '' }), 'PENDING');
+  assert.deepEqual(getItemSignOffStatus(item), { status: 'PARTIAL', signedCount: 1, totalCount: 2 });
 });
 
 test('getItemSignOffStatus 有子任务时以子任务状态为准，PENDING 不被 SIGN 时间轴误算', () => {
@@ -201,6 +269,25 @@ test('getEffectiveItemStatus 优先使用后端下发的有效状态', () => {
     getEffectiveItemStatus({ ...baseItem, status: 'PENDING', effectiveStatus: 'EXECUTING', timeline: [] }),
     'EXECUTING',
   );
+});
+
+test('getMobileItemStatus 按责任人使用个人子任务状态', () => {
+  const item = {
+    ...baseItem,
+    status: 'OVERDUE' as const,
+    ownerId: '',
+    ownerName: '',
+    ownerIds: ['owner-a', 'owner-b'],
+    ownerNames: ['责任人A', '责任人B'],
+    subTasks: [
+      { id: 'a', parentItemId: 'item-1', title: 'A', deadline: '', status: 'EXECUTING' as const, assigneeId: 'owner-a', assigneeName: '责任人A', plannedCompletionDate: '2026/08/31' },
+      { id: 'b', parentItemId: 'item-1', title: 'B', deadline: '', status: 'PENDING' as const, assigneeId: 'owner-b', assigneeName: '责任人B' },
+    ],
+  };
+
+  assert.equal(getMobileItemStatus(item, { id: 'owner-a', name: '责任人A', username: '' }), 'EXECUTING');
+  assert.equal(getMobileItemStatus(item, { id: 'owner-b', name: '责任人B', username: '' }), 'PENDING');
+  assert.equal(getMobileItemStatus(item, { id: 'follower', name: '跟进人', username: '' }), 'OVERDUE');
 });
 
 test('getEffectiveItemStatus 签收后的展示状态只认后端 effectiveStatus', () => {

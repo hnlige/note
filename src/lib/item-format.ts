@@ -129,7 +129,11 @@ export function getItemSignOffStatus(item: SupervisionItem): {
       return Boolean(owner.name && task.assigneeName === owner.name);
     });
     if (ownerSubTask) {
-      return ownerSubTask.status !== 'PENDING' && ownerSubTask.status !== 'DELETED';
+      if (ownerSubTask.status === 'PENDING' || ownerSubTask.status === 'DELETED') return false;
+      const signedByTimeline = (owner.id && signedIds.has(owner.id)) || (owner.name && signedNamesWithoutActorId.has(owner.name));
+      // 历史数据缺少 SIGN 时，仅已有计划完成日期的非 PENDING 子任务兼容为已签收；
+      // 无 SIGN 且无计划日期通常是旧版反馈自动签收遗留，仍应保留待签收。
+      return Boolean(signedByTimeline || String(ownerSubTask.plannedCompletionDate || '').trim());
     }
 
     if (owner.id && signedIds.has(owner.id)) return true;
@@ -181,6 +185,25 @@ export function isItemFollowerForUser(item: SupervisionItem, user: Pick<User, 'i
     .some(value => identityMatches(value, identities));
 }
 
+/** 当前用户是否「与事项相关」：作为责任人和/或跟进人。工作台卡片(FOLLOWER 收窄)与 /items?scope=mine 下钻共用，保证口径一致。 */
+export function isItemRelatedToUser(item: SupervisionItem, user: Pick<User, 'id' | 'name' | 'username'>): boolean {
+  const identities = getUserIdentityKeys(user);
+  const isShared = (item.sharedWith || []).some((shared) =>
+    identityMatches(shared.userId, identities) || identityMatches(shared.userName, identities),
+  );
+  return isItemOwnerForUser(item, user) || isItemFollowerForUser(item, user) || isShared;
+}
+
+/** 移动端事项状态：责任人按本人子任务，其余相关人员按事项聚合状态。 */
+export function getMobileItemStatus(
+  item: SupervisionItem,
+  user: Pick<User, 'id' | 'name' | 'username'>,
+): ItemStatus {
+  return isItemOwnerForUser(item, user)
+    ? getEffectiveStatusForUserIdentity(item, user)
+    : getEffectiveItemStatus(item);
+}
+
 export function getUserSubTask(item: SupervisionItem, userId: string): SubTask | undefined {
   return item.subTasks?.find(task => task.assigneeId === userId);
 }
@@ -199,7 +222,17 @@ export function getEffectiveStatusForUser(item: SupervisionItem, userId: string)
 export function getEffectiveStatusForUserIdentity(item: SupervisionItem, user: Pick<User, 'id' | 'name' | 'username'>): ItemStatus {
   if (isFinalItemStatus(item.status)) return item.status;
   const subTask = getUserSubTaskForIdentity(item, user);
-  return subTask?.status || getEffectiveItemStatus(item);
+  if (!subTask) return getEffectiveItemStatus(item);
+    if (subTask.status !== 'PENDING' && subTask.status !== 'DELETED' && !String(subTask.plannedCompletionDate || '').trim()) {
+    const identities = getUserIdentityKeys(user);
+    const signedByTimeline = (item.timeline || []).some((node) =>
+      node.type === 'SIGN' && (
+        identityMatches(node.actorUserId, identities) || identityMatches(node.user, identities)
+      ),
+    );
+    if (!signedByTimeline) return 'PENDING';
+  }
+  return subTask.status;
 }
 
 export function aggregateSubTaskStatus(subTasks: SubTask[]): ItemStatus {
