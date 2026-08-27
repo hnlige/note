@@ -75,6 +75,9 @@ echo "[5/5] 同步构建产物到服务器..."
 rsync -az --delete -e "ssh $RSYNC_SSH_ARGS" dist/ "${REMOTE_TARGET}:${SERVER_INBOX}/frontend/"
 rsync -az --delete -e "ssh $RSYNC_SSH_ARGS" server/dist/ "${REMOTE_TARGET}:${SERVER_INBOX}/backend/"
 rsync -az -e "ssh $RSYNC_SSH_ARGS" deploy/ "${REMOTE_TARGET}:${SERVER_REPO}/deploy/"
+# deploy-server.sh 会 cp $SERVER_REPO/server/ecosystem.config.js 到 PM2 运行时目录；
+# 该文件承载 DEPLOY_RUNTIME_ID 等进程环境声明，不同步的话服务器旧副本会让部署指纹透传失效。
+rsync -az -e "ssh $RSYNC_SSH_ARGS" server/ecosystem.config.js "${REMOTE_TARGET}:${SERVER_REPO}/server/ecosystem.config.js"
 
 echo "  触发远端部署..."
 ssh "${SSH_ARGS[@]}" "${REMOTE_TARGET}" "INCOMING_DIR='${SERVER_INBOX}' SKIP_GIT_SYNC=1 bash ${SERVER_REPO}/deploy/deploy-server.sh"
