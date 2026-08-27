@@ -64,3 +64,36 @@ test('addLog does not store an untrusted local log when the server rejects it', 
     useStore.setState(previousState, true);
   }
 });
+
+test('syncLogs replaces the empty initial state with server operation logs', async () => {
+  const previousState = useStore.getState();
+  const originalFetch = globalThis.fetch;
+  const serverLogs = [{
+    id: 'server-log-id',
+    userId: 'auth-user',
+    userName: '真实用户',
+    action: '事项变更',
+    module: '督办事项',
+    timestamp: '2026-08-19T10:00:00.000Z',
+    ip: '10.0.0.8',
+  }];
+  let requestUrl: string | undefined;
+
+  globalThis.fetch = (async (input: string | URL | Request) => {
+    requestUrl = String(input);
+    return new Response(JSON.stringify({ data: serverLogs, pagination: { page: 1, pageSize: 200, total: 1, totalPages: 1 } }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }) as typeof fetch;
+  useStore.setState({ logs: [] });
+
+  try {
+    await useStore.getState().syncLogs();
+    assert.match(requestUrl || '', /\/api\/logs\?page=1&pageSize=200$/);
+    assert.deepEqual(useStore.getState().logs, serverLogs);
+  } finally {
+    globalThis.fetch = originalFetch;
+    useStore.setState(previousState, true);
+  }
+});

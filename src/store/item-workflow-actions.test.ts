@@ -283,8 +283,8 @@ test('postponeItem updates overdue owner items to DELAYED and persists new deadl
       activities: [],
     });
 
-    useStore.getState().postponeItem(overdueItem.id, '等待外部资源到位', '2026/07/01');
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    const result = await useStore.getState().postponeItem(overdueItem.id, '等待外部资源到位', '2026/07/01');
+    assert.equal(result.ok, true);
 
     const [updatedItem] = useStore.getState().items;
     assert.equal(updatedItem.status, 'DELAYED');
@@ -295,11 +295,63 @@ test('postponeItem updates overdue owner items to DELAYED and persists new deadl
 
     assert.equal(updateCalls.length, 1);
     assert.equal(updateCalls[0]?.id, overdueItem.id);
-    assert.deepEqual(updateCalls[0]?.payload, {
-      status: 'DELAYED',
-      deadline: '2026/07/01',
-      plannedCompletionDate: '2026/07/01',
+    assert.equal(updateCalls[0]?.payload.status, 'DELAYED');
+    assert.equal(updateCalls[0]?.payload.deadline, '2026/07/01');
+    assert.equal(updateCalls[0]?.payload.plannedCompletionDate, '2026/07/01');
+    // 延期原因必须随时间轴节点下发，否则服务端提示消息与时间轴会丢失原因。
+    const delayNode = (updateCalls[0]?.payload.timeline as Array<{ type: string; content: string; user: string }>)[0];
+    assert.equal(delayNode?.type, 'DELAY');
+    assert.equal(delayNode?.user, '刘维雷');
+    assert.match(delayNode?.content || '', /申请延期。原因：等待外部资源到位，新计划完成日期：2026\/07\/01/);
+  } finally {
+    apiModule.api.items.update = originalUpdate;
+    useStore.setState(previousState, true);
+  }
+});
+
+test('postponeItem syncs own subtask to DELAYED for single-owner items with subtasks', async () => {
+  const previousState = useStore.getState();
+  const apiModule = await import('../lib/api.ts');
+  const originalUpdate = apiModule.api.items.update;
+  const updateCalls: Array<{ id: string; payload: Record<string, unknown> }> = [];
+
+  apiModule.api.items.update = (async (id: string, payload: Record<string, unknown>) => {
+    updateCalls.push({ id, payload });
+    return { success: true };
+  }) as typeof apiModule.api.items.update;
+
+  try {
+    // 单责任人但存在本人子任务：延期必须同步子任务，否则子任务停留 OVERDUE，反馈会被服务端拦截。
+    const item: SupervisionItem = {
+      ...overdueItem,
+      subTasks: [
+        { id: 'sub-1', parentItemId: overdueItem.id, title: '本人任务', assigneeId: 'owner-1', assigneeName: '刘维雷', status: 'OVERDUE', deadline: '2026/06/20', plannedCompletionDate: '2026/06/20' },
+      ],
+    };
+    useStore.setState({
+      ...previousState,
+      currentUser: {
+        id: 'owner-1',
+        name: '刘维雷',
+        role: 'OWNER',
+        roleId: 'r6',
+        roleIds: ['r6'],
+      },
+      items: [item],
+      activities: [],
     });
+
+    const result = await useStore.getState().postponeItem(item.id, '等待外部资源到位', '2026/08/28');
+    assert.equal(result.ok, true);
+
+    const payloadSubTasks = updateCalls[0]?.payload.subTasks as Array<{ status: string; plannedCompletionDate?: string; deadline?: string }>;
+    assert.equal(payloadSubTasks?.[0]?.status, 'DELAYED');
+    assert.equal(payloadSubTasks?.[0]?.plannedCompletionDate, '2026/08/28');
+    assert.equal(payloadSubTasks?.[0]?.deadline, '2026/08/28');
+
+    const [updatedItem] = useStore.getState().items;
+    assert.equal(updatedItem.subTasks?.[0]?.status, 'DELAYED');
+    assert.equal(updatedItem.subTasks?.[0]?.plannedCompletionDate, '2026/08/28');
   } finally {
     apiModule.api.items.update = originalUpdate;
     useStore.setState(previousState, true);
@@ -331,14 +383,53 @@ test('postponeItem ignores non-owner items even when they are overdue', async ()
       activities: [],
     });
 
-    useStore.getState().postponeItem(nonOwnerOverdueItem.id, '不应生效', '2026/07/01');
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    const result = await useStore.getState().postponeItem(nonOwnerOverdueItem.id, '不应生效', '2026/07/01');
+    assert.equal(result.ok, false);
+    assert.match(result.error || '', /仅事项责任人可申请延期/);
 
     const [updatedItem] = useStore.getState().items;
     assert.equal(updatedItem.status, 'OVERDUE');
     assert.equal(updatedItem.deadline, '2026-06-20');
     assert.equal(updatedItem.plannedCompletionDate, undefined);
     assert.equal(updateCalls.length, 0);
+  } finally {
+    apiModule.api.items.update = originalUpdate;
+    useStore.setState(previousState, true);
+  }
+});
+
+test('postponeItem keeps DELAYED action for multi-owner payload when aggregate status remains overdue', async () => {
+  const previousState = useStore.getState();
+  const apiModule = await import('../lib/api.ts');
+  const originalUpdate = apiModule.api.items.update;
+  const updateCalls: Array<{ id: string; payload: Record<string, unknown> }> = [];
+
+  apiModule.api.items.update = (async (id: string, payload: Record<string, unknown>) => {
+    updateCalls.push({ id, payload });
+    return { success: true };
+  }) as typeof apiModule.api.items.update;
+
+  try {
+    const item = {
+      ...overdueItem,
+      ownerId: '',
+      ownerName: '',
+      ownerIds: ['owner-1', 'owner-2'],
+      ownerNames: ['刘维雷', '其他责任人'],
+      status: 'OVERDUE' as const,
+      subTasks: [
+        { id: 'sub-1', parentItemId: overdueItem.id, title: '本人任务', assigneeId: 'owner-1', assigneeName: '刘维雷', status: 'OVERDUE' as const, deadline: '2026/08/20', plannedCompletionDate: '2026/08/20' },
+        { id: 'sub-2', parentItemId: overdueItem.id, title: '其他任务', assigneeId: 'owner-2', assigneeName: '其他责任人', status: 'OVERDUE' as const, deadline: '2026/08/20', plannedCompletionDate: '2026/08/20' },
+      ],
+    };
+    useStore.setState({ ...previousState, currentUser: { id: 'owner-1', name: '刘维雷', role: 'OWNER', roleId: 'r6', roleIds: ['r6'] }, items: [item], activities: [] });
+
+    await useStore.getState().postponeItem(item.id, '等待外部资源到位', '2026/08/28');
+
+    assert.equal(updateCalls.length, 1);
+    assert.equal(updateCalls[0]?.payload.status, 'DELAYED');
+    assert.equal((updateCalls[0]?.payload.subTasks as Array<{ status: string; plannedCompletionDate?: string }>)[0]?.status, 'DELAYED');
+    assert.equal((updateCalls[0]?.payload.subTasks as Array<{ status: string; plannedCompletionDate?: string }>)[0]?.plannedCompletionDate, '2026/08/28');
   } finally {
     apiModule.api.items.update = originalUpdate;
     useStore.setState(previousState, true);
@@ -370,8 +461,9 @@ test('postponeItem ignores owner items that are not overdue', async () => {
       activities: [],
     });
 
-    useStore.getState().postponeItem(executingItem.id, '不应生效', '2026/07/01');
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    const result = await useStore.getState().postponeItem(executingItem.id, '不应生效', '2026/07/01');
+    assert.equal(result.ok, false);
+    assert.match(result.error || '', /仅已超时的事项允许申请延期/);
 
     const [updatedItem] = useStore.getState().items;
     assert.equal(updatedItem.status, 'EXECUTING');

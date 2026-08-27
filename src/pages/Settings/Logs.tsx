@@ -4,15 +4,23 @@ import { MainLayout } from '../../components/Layout/MainLayout';
 import { PaginationFooter } from '../../components/Common/PaginationFooter';
 import { DEFAULT_PAGE_SIZE_OPTIONS, paginateItems } from '../../components/Common/pagination';
 import { useStore } from '../../store/useStore';
+import { useToast } from '../../components/Common/Toast';
 import { downloadCsv } from '../../lib/export-csv';
 import { buildLogsExport, canExportLogs, matchesLogKeyword } from './logs-export';
 import { formatDateTime } from '../../lib/item-format';
 
 const Logs: React.FC = () => {
-  const { logs, currentUser, roles } = useStore();
+  const { logs, currentUser, roles, syncLogs } = useStore();
+  const { showToast } = useToast();
   const [keyword, setKeyword] = useState('');
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState<number>(DEFAULT_PAGE_SIZE_OPTIONS[0]);
+
+  React.useEffect(() => {
+    syncLogs().catch((error) => {
+      showToast(error instanceof Error ? error.message : '加载操作日志失败', 'error');
+    });
+  }, [showToast, syncLogs]);
 
   const filteredLogs = useMemo(() => {
     const query = keyword.trim().toLowerCase();

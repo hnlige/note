@@ -6,6 +6,7 @@ import { useToast } from '../Common/Toast';
 import { useStore } from '../../store/useStore';
 import { getVisibleMessages } from '../../store/message-visibility';
 import { shouldSyncOrgUsers } from '../../store/bootstrap-sync';
+import { canAccessByAuthCodes } from '../../store/role-access';
 
 interface MainLayoutProps {
   children: React.ReactNode;
@@ -73,16 +74,20 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ children }) => {
       if (cancelled) return;
 
       const latestRoles = useStore.getState().roles;
+      // 全局规则/亮灯记录为管理员配置类数据（后端要求对应菜单权限），
+      // 仅当用户拥有相关 authCode 时才拉取，避免非管理员每次进入都收到 403。
+      const canReadGlobalRules = canAccessByAuthCodes(currentUser, latestRoles, ['MENU_RULES', 'MENU_SYSTEM', 'MENU_WECOM']);
+      const canReadLights = canAccessByAuthCodes(currentUser, latestRoles, ['MENU_LIGHTS']);
       const syncTasks = [
         syncItems(),
-        syncLightRecords(),
         syncMessages(),
         syncUrges(),
         syncDepartments(),
         syncTemplates(),
         syncDictionaries(),
-        syncGlobalRules(),
       ];
+      if (canReadGlobalRules) syncTasks.push(syncGlobalRules());
+      if (canReadLights) syncTasks.push(syncLightRecords());
 
       if (shouldSyncOrgUsers({ roleId: currentUser.roleId, roleIds: currentUser.roleIds }, latestRoles)) {
         syncTasks.push(syncOrgUsers());

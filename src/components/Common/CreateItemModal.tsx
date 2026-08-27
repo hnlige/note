@@ -256,7 +256,10 @@ export const CreateItemModal: React.FC<CreateItemModalProps> = ({ isOpen, onClos
     const mainOwner = owners[0];
     const mainFollower = followers[0];
     const newId = Math.random().toString(36).slice(2, 11);
-    const deadline = formData.requiredCompletionDate || formData.plannedCompletionDate || '';
+    // 多责任人事项的父级截止日期只代表跟进人填写的要求完成日期；
+    // 责任人的计划完成日期必须在各自签收时独立产生，不能把首位责任人的日期传播给全事项。
+    const isMultiOwner = owners.length > 1;
+    const deadline = normalizedRequiredCompletionDate || (!isMultiOwner ? normalizedPlannedCompletionDate : '');
     const ownerSubTasks = owners.map(owner => ({
       id: `${newId}-${owner.id}`,
       parentItemId: newId,
@@ -266,8 +269,8 @@ export const CreateItemModal: React.FC<CreateItemModalProps> = ({ isOpen, onClos
       assigneeId: owner.id,
       assigneeName: owner.name,
       progress: 0,
-      requiredCompletionDate: formData.requiredCompletionDate,
-      plannedCompletionDate: formData.plannedCompletionDate,
+      requiredCompletionDate: normalizedRequiredCompletionDate,
+      plannedCompletionDate: isMultiOwner ? '' : normalizedPlannedCompletionDate,
     }));
 
     try {
@@ -285,7 +288,7 @@ export const CreateItemModal: React.FC<CreateItemModalProps> = ({ isOpen, onClos
         meetingName: formData.meetingName,
         raiseDate: normalizedRaiseDate,
         requiredCompletionDate: normalizedRequiredCompletionDate,
-        plannedCompletionDate: normalizedPlannedCompletionDate,
+        plannedCompletionDate: isMultiOwner ? '' : normalizedPlannedCompletionDate,
         actualCompletionDate: normalizedActualCompletionDate,
         ownerIds: owners.map(o => o.id),
         ownerNames: owners.map(o => o.name),
