@@ -38,13 +38,18 @@ wecomRouter.post('/login', async (req: Request, res: Response) => {
 
     const db = await getDb();
     const { users: usersTable, roles: rolesTable } = await import('../db/schema');
-    const { eq } = await import('drizzle-orm');
+    const { eq, or } = await import('drizzle-orm');
 
     // 匹配本系统账号
+    // 历史通讯录导入的账号可能已有与企业微信一致的 username，但尚未填充
+    // wecom_user_id。仅按 wecom_user_id 会让这些账号在移动端免登后被误判为未建档。
     const [user] = await db
       .select()
       .from(usersTable)
-      .where(eq(usersTable.wecomUserId as any, wecomUserId))
+      .where(or(
+        eq(usersTable.wecomUserId as any, wecomUserId),
+        eq(usersTable.username, wecomUserId),
+      ))
       .limit(1);
 
     if (!user) {
@@ -55,6 +60,13 @@ wecomRouter.post('/login', async (req: Request, res: Response) => {
 
     if (user.status !== 'ACTIVE') {
       return res.status(401).json({ error: '您的督办系统账号已被禁用' });
+    }
+
+    // 首次通过 username 兜底匹配成功后补齐映射，后续登录走稳定的 wecom_user_id。
+    if (!user.wecomUserId) {
+      await db.update(usersTable)
+        .set({ wecomUserId } as any)
+        .where(eq(usersTable.id, user.id));
     }
 
     const roleIds = parseStringArray(user.roleIds).length > 0
@@ -74,6 +86,7 @@ wecomRouter.post('/login', async (req: Request, res: Response) => {
       roleIds,
       deptId: user.deptId,
       orgId: user.orgId,
+      sessionVersion: user.sessionVersion ?? 0,
     });
 
     return res.json({
