@@ -1,9 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { resolveWorkbenchMetricMode } from './MetricCards';
-import { buildWorkbenchStatusMetrics, isUserWorkbenchItem } from './workbench-metrics';
-import { isItemOwnerForUser } from '../../../lib/item-format';
+import { resolveWorkbenchMetricMode, getWorkbenchCardDrill } from './MetricCards';
+import { buildWorkbenchStatusMetrics, isUserWorkbenchItem, isWorkbenchPendingOpenItem, isWorkbenchNoFeedbackItem, isWorkbenchIncompleteItem } from './workbench-metrics';
+import { isItemOwnerForUser, isItemFollowerForUser, isItemRelatedToUser, getEffectiveItemStatus } from '../../../lib/item-format';
+import { mapRoleIdentityToUserRole } from '../../../store/role-access';
 import { SupervisionItem, User, Role, SubTask } from '../../../types';
 
 function subTask(name: string, status: string, assigneeId: string): SubTask {
@@ -87,4 +88,95 @@ test('person 模式：未完成计本人非 COMPLETED 的子任务(A、B、C、D
   const m = buildWorkbenchStatusMetrics(scoped, 'person', weihyOrgUser);
   assert.equal(m.find(x => x.key === 'incomplete')!.value, 4, 'A、B、C、D 的魏红义子任务均未完成');
   assert.equal(m.find(x => x.key === 'completed')!.value, 0);
+});
+
+// 跟进人(r2)数据范围为部门级(DEPT)：可见范围内包含大量他人负责的督办，
+// 但首页卡片应只统计「本人作为责任人和/或跟进人」的事项，避免「首页有数、我的待办为空」。
+const r2: Role = {
+  id: 'r2', name: '督办跟进人', description: '', permissions: [], dataScope: 'DEPT', followerDataScope: 'DEPT',
+  authCodes: [], allowedActions: [], allowedPageActions: {}, orgIds: [], customUserIds: [], ownerCustomUserIds: [], followerCustomUserIds: [],
+} as unknown as Role;
+const followerUser: User = { id: 'f1', name: '跟进人甲', username: 'f001', roleId: 'r2', roleIds: ['r2'] } as User;
+
+test('跟进人(r2, DEPT) → item 模式（数据范围非 SELF）', () => {
+  assert.equal(resolveWorkbenchMetricMode(followerUser, [r2]), 'item');
+  assert.equal(mapRoleIdentityToUserRole(followerUser), 'FOLLOWER');
+});
+
+test('跟进人首页指标只统计本人责任/跟进事项（与《我的督办》一致）', () => {
+  const deptItems: SupervisionItem[] = [
+    item({ id: 'itemX', ownerId: 'o1', ownerName: '负责人1', followerId: 'o2', followerName: '别人' }),
+    item({ id: 'itemY', ownerId: 'o1', ownerName: '负责人1', followerId: 'f1', followerName: '跟进人甲' }),
+    item({ id: 'itemZ', ownerId: 'o3', ownerName: '负责人3', followerId: 'o4', followerName: '别人2' }),
+  ];
+  // 收窄后只含本人跟进的 itemY（与 buildMyItemsScope 的 followedItems/ownedItems 口径一致）
+  const scoped = deptItems.filter(i => isItemOwnerForUser(i, followerUser) || isItemFollowerForUser(i, followerUser));
+  assert.deepEqual(scoped.map(i => i.id), ['itemY'], '仅本人相关事项进入首页统计，别人负责的 itemX/itemZ 不计入');
+  const m = buildWorkbenchStatusMetrics(scoped, 'item');
+  assert.equal(m.find(x => x.key === 'incomplete')!.value, 1, '未完成只计本人跟进的 itemY');
+});
+
+// 下钻目标必须是「事项列表页」(/items)，而非《我的督办》。此前跟进人卡片错误地跳到
+// /my-items（我的待办任务列表），既偏离事项列表语义，又无法覆盖已超期/未完成等卡片口径。
+test('getWorkbenchCardDrill: 跟进人 → /items 且带 scope=mine', () => {
+  const baseParams = '?pendingOpen=1';
+  const drill = getWorkbenchCardDrill({ metricMode: 'item', isFollower: true, basePath: '/items', baseParams });
+  assert.equal(drill.path, '/items', '跟进人下钻进入事项列表页');
+  assert.equal(drill.params, '?pendingOpen=1&scope=mine', '跟进人下钻收窄到本人责任/跟进事项');
+});
+
+test('getWorkbenchCardDrill: 纯责任人 → /items 且带 ownerId=me', () => {
+  const drill = getWorkbenchCardDrill({ metricMode: 'person', isFollower: false, basePath: '/items', baseParams: '?status=COMPLETED' });
+  assert.equal(drill.path, '/items');
+  assert.equal(drill.params, '?status=COMPLETED&ownerId=me');
+});
+
+test('getWorkbenchCardDrill: 管理员/领导(item) → /items 且不加额外收窄', () => {
+  const drill = getWorkbenchCardDrill({ metricMode: 'item', isFollower: false, basePath: '/items', baseParams: '?status=OVERDUE,DELAYED' });
+  assert.equal(drill.path, '/items');
+  assert.equal(drill.params, '?status=OVERDUE,DELAYED');
+});
+
+// 宽范围跟进人（如吴艺悦 r2+r5 组织管理员 MULTI_ORG）：可见范围内含大量同组织、非本人相关的事项。
+// 修复前：下钻跳到 /my-items 且口径不符；若直接跳 /items 而不收窄，completed 等卡片会多算组织内他人事项。
+// 修复后：scope=mine 把 /items 收窄到「本人责任/跟进」事项，下钻条数与首页卡片一一对应。
+test('宽范围跟进人(吴艺悦 r2+r5): 首页卡片条数 === /items?scope=mine 下钻条数', () => {
+  const follower = { id: 'f-wide', name: '吴艺悦', username: '00000210', roleId: 'r2', roleIds: ['r2', 'r5'] } as User;
+  // visibleItems = 跟进人可见范围（含本人相关 + 同组织他人负责的大批事项）。
+  // 注意：status 用真实值，getEffectiveItemStatus 由 status/timeline 推导，不读假设的 effectiveStatus 字段。
+  const visibleItems: SupervisionItem[] = [
+    item({ id: 'mine-own-overdue', status: 'OVERDUE', ownerId: 'f-wide', ownerName: '吴艺悦' }),
+    item({ id: 'mine-follow-completed', status: 'COMPLETED', followerId: 'f-wide', followerName: '吴艺悦' }),
+    item({ id: 'mine-follow-exec', status: 'EXECUTING', followerId: 'f-wide', followerName: '吴艺悦' }),
+    // 同组织、非本人相关：不应进入首页卡片，也不应进入 scope=mine 下钻
+    item({ id: 'org-other-pending', status: 'PENDING', ownerId: 'o-x', ownerName: '别人', followerId: 'o-y', followerName: '别人2' }),
+    item({ id: 'org-other-overdue', status: 'OVERDUE', ownerId: 'o-x', ownerName: '别人' }),
+    item({ id: 'org-other-completed', status: 'COMPLETED', ownerId: 'o-x', ownerName: '别人' }),
+  ];
+
+  // 首页卡片口径：scopedItems = 本人相关事项
+  const scoped = visibleItems.filter(i => isItemRelatedToUser(i, follower));
+  assert.deepEqual(scoped.map(i => i.id), ['mine-own-overdue', 'mine-follow-completed', 'mine-follow-exec']);
+  const card = buildWorkbenchStatusMetrics(scoped, 'item');
+
+  // /items?scope=mine 下钻：在 visibleItems 基础上再按 related 收窄（与 Items/index.tsx 内联逻辑一致），
+  // 再按卡片语义状态谓词过滤。
+  const drillBase = visibleItems.filter(i => isItemRelatedToUser(i, follower)); // === scoped
+  const drillCounts = {
+    pendingOpen: drillBase.filter(isWorkbenchPendingOpenItem).length,
+    overdue: drillBase.filter(i => getEffectiveItemStatus(i) === 'OVERDUE' || getEffectiveItemStatus(i) === 'DELAYED').length,
+    noFeedback: drillBase.filter(isWorkbenchNoFeedbackItem).length,
+    incomplete: drillBase.filter(isWorkbenchIncompleteItem).length,
+    completed: drillBase.filter(i => getEffectiveItemStatus(i) === 'COMPLETED').length,
+  };
+
+  assert.equal(drillCounts.pendingOpen, card.find(c => c.key === 'pendingOpen')!.value);
+  assert.equal(drillCounts.overdue, card.find(c => c.key === 'overdue')!.value);
+  assert.equal(drillCounts.noFeedback, card.find(c => c.key === 'noFeedback')!.value);
+  assert.equal(drillCounts.incomplete, card.find(c => c.key === 'incomplete')!.value);
+  assert.equal(drillCounts.completed, card.find(c => c.key === 'completed')!.value);
+
+  // 关键回归：若没有 scope=mine（直接展示 visibleItems），completed 会多算 org-other-completed → 2 而非 1。
+  const withoutScope = visibleItems.filter(i => getEffectiveItemStatus(i) === 'COMPLETED').length;
+  assert.notEqual(withoutScope, drillCounts.completed, '无 scope=mine 时宽范围跟进人下钻条数会多于卡片（旧 bug 根因）');
 });

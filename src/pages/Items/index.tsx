@@ -8,7 +8,7 @@ import { FilterPanel } from './components/FilterPanel';
 import { useStore } from '../../store/useStore';
 import { Plus, Download, ChevronRight, ChevronDown, Calendar, Zap, Trash2, Filter, X, CheckSquare, Square } from 'lucide-react';
 import { SupervisionItem, DeptNode, OrgUser } from '../../types';
-import { formatDate, getEffectiveItemStatus, getItemStatusLabel, getItemStatusStyle, getItemSignOffStatus, getSignOffStatusLabel, getSignOffStatusStyle, getUniqueTimeline, normalizeManualDateInput, compareItemsByRaiseDateDesc, isItemOwnerForUser } from '../../lib/item-format';
+import { formatDate, getEffectiveItemStatus, getItemStatusLabel, getItemStatusStyle, getItemSignOffStatus, getSignOffStatusLabel, getSignOffStatusStyle, getUniqueTimeline, normalizeManualDateInput, compareItemsByRaiseDateDesc, isItemOwnerForUser, isItemRelatedToUser } from '../../lib/item-format';
 import { downloadCsv, downloadExcel } from '../../lib/export-csv';
 import { canUseAllowedAction, canUsePageAction, getAssignedRoleIds } from '../../store/role-access';
 import { buildItemExportConfig, ItemExportFieldPreset, ItemExportFormat } from '../../lib/item-export';
@@ -42,6 +42,7 @@ const Items: React.FC = () => {
   const urlSignOff = searchParams.get('signOff');
   const urlIncomplete = searchParams.get('incomplete');
   const urlPendingOpen = searchParams.get('pendingOpen');
+  const urlScope = searchParams.get('scope');
   const urlDueSoon = searchParams.get('dueSoon');
   const urlOnTimeCompleted = searchParams.get('onTimeCompleted');
 
@@ -116,7 +117,7 @@ const Items: React.FC = () => {
     });
   };
 
-  const hasUrlParams = !!(urlStatusFilter || urlLightStatusFilter || urlOwnerId || urlFollowerId || urlNoFeedback || urlSignOff || urlIncomplete || urlPendingOpen || urlDueSoon || urlOnTimeCompleted);
+  const hasUrlParams = !!(urlStatusFilter || urlLightStatusFilter || urlOwnerId || urlFollowerId || urlNoFeedback || urlSignOff || urlIncomplete || urlPendingOpen || urlDueSoon || urlOnTimeCompleted || urlScope);
   const hasLocalFilters = !!(localStatusFilter || localDepartmentFilter || localDateFrom || localDateTo || localSearch);
 
   const activeFilterCount = useMemo(() => {
@@ -128,16 +129,21 @@ const Items: React.FC = () => {
     if (urlSignOff) count++;
     if (urlIncomplete) count++;
     if (urlPendingOpen) count++;
+    if (urlScope) count++;
     if (localStatusFilter) count++;
     if (localDepartmentFilter) count++;
     if (localDateFrom || localDateTo) count++;
     if (localSearch) count++;
     return count;
-  }, [urlStatusFilter, urlLightStatusFilter, urlOwnerId, urlFollowerId, urlNoFeedback, urlPendingOpen, localStatusFilter, localDepartmentFilter, localDateFrom, localDateTo, localSearch]);
+  }, [urlStatusFilter, urlLightStatusFilter, urlOwnerId, urlFollowerId, urlNoFeedback, urlSignOff, urlIncomplete, urlPendingOpen, urlScope, localStatusFilter, localDepartmentFilter, localDateFrom, localDateTo, localSearch]);
 
   const filteredItems = useMemo(() => {
     const list = filterVisibleItems({ items, currentUser, orgUsers, roles, departments }).filter(item => {
       // 2. URL 参数过滤
+      // 工作台跟进人下钻(scope=mine)：仅保留本人作为责任人和/或跟进人的事项，与首页卡片口径一致。
+      // 即便跟进人另有组织/部门级数据范围(如兼任组织管理员 r5，范围被放大)，下钻条数也与首页卡片对应。
+      if (urlScope === 'mine' && !isItemRelatedToUser(item, currentUser)) return false;
+
       if (urlStatusFilter) {
         const allowedStatuses = urlStatusFilter.split(',');
         // 责任人(ownerId=me)视角下钻：已超期/已完成改用用户级命中，与首页数字一一对应
@@ -226,7 +232,7 @@ const Items: React.FC = () => {
       return true;
     });
     return [...list].sort(compareItemsByRaiseDateDesc);
-  }, [items, currentUser, orgUsers, roles, departments, urlStatusFilter, urlLightStatusFilter, resolvedOwnerId, resolvedFollowerId, urlNoFeedback, urlDueSoon, urlOnTimeCompleted, localStatusFilter, localDepartmentFilter, localDateFrom, localDateTo, localSearch, searchTerm, departmentFilterLookup]);
+  }, [items, currentUser, orgUsers, roles, departments, urlStatusFilter, urlLightStatusFilter, resolvedOwnerId, resolvedFollowerId, urlNoFeedback, urlDueSoon, urlOnTimeCompleted, urlScope, localStatusFilter, localDepartmentFilter, localDateFrom, localDateTo, localSearch, searchTerm, departmentFilterLookup]);
   const pagination = useMemo(
     () => paginateItems(filteredItems, page, pageSize),
     [filteredItems, page, pageSize],

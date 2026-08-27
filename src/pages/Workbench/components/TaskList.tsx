@@ -11,6 +11,7 @@ import {
   compareItemsByRaiseDateDesc,
   formatDate,
   getEffectiveItemStatus,
+  getEffectiveStatusForUserIdentity,
   getItemStatusLabel,
   getItemStatusStyle,
   getUserSubTaskForIdentity,
@@ -359,7 +360,11 @@ export const TaskList: React.FC = () => {
           </thead>
           <tbody className="divide-y divide-slate-50">
             {pagination.rows.map((item, index) => {
-              const effectiveStatus = getEffectiveItemStatus(item);
+              // 工作台责任人视角必须展示当前责任人的子任务状态；否则多责任人中
+              // 其他人的签收/超期会通过父级聚合状态覆盖本人「待签收」状态。
+              const effectiveStatus = isItemOwnerForUser(item, currentUser)
+                ? getEffectiveStatusForUserIdentity(item, currentUser)
+                : getEffectiveItemStatus(item);
               const subTasks = item.subTasks || [];
               const hasChildren = subTasks.length > 1;
               const showChildren = displayMode === 'parentAndSubtasks' && hasChildren;

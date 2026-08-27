@@ -636,3 +636,137 @@ test('isUserWorkbenchItem：非责任人用户对所有事项均不命中', () =
     assert.equal(items.filter(i => isUserWorkbenchItem(key, i, 路人)).length, 0, `路人 ${key} 全不命中`);
   }
 });
+
+/**
+ * 回归：同一事项给当前用户分配了【多个子任务】时，首页 person 数字必须与下钻条数一致。
+ * 这正是贺诗然账号暴露的线上问题根因——修复前首页按「责任人任务数」累加（同一事项计多次），
+ * 而下钻列表按「事项」计（一行一事项），导致首页数字 > 下钻条数。
+ */
+test('person+currentUser：同一事项多子任务，首页数字=下钻条数（贺诗然场景回归）', () => {
+  const 贺诗然 = { id: 'user-he', name: '贺诗然', username: 'heshiran' };
+
+  // 1 件事项：贺诗然被拆成 2 个子任务，均 OVERDUE 已签收无反馈；另 1 件贺诗然单子任务 COMPLETED。
+  const items: SupervisionItem[] = [
+    item({
+      id: 'multi-subtask-same-user',
+      status: 'OVERDUE',
+      ownerName: '贺诗然',
+      ownerNames: ['贺诗然'],
+      ownerIds: ['user-he'],
+      subTasks: [
+        { ...subTask('贺诗然', 'OVERDUE'), assigneeId: 'user-he', id: 'sub-he-1' },
+        { ...subTask('贺诗然', 'OVERDUE'), assigneeId: 'user-he', id: 'sub-he-2' },
+      ],
+      timeline: [
+        { id: 'sh1', type: 'SIGN', user: '贺诗然', content: '签收', timestamp: '2026-07-01 09:00' },
+        { id: 'sh2', type: 'SIGN', user: '贺诗然', content: '签收', timestamp: '2026-07-01 09:01' },
+      ],
+    }),
+    item({
+      id: 'single-completed',
+      status: 'COMPLETED',
+      ownerName: '贺诗然',
+      ownerNames: ['贺诗然'],
+      ownerIds: ['user-he'],
+      subTasks: [{ ...subTask('贺诗然', 'COMPLETED'), assigneeId: 'user-he' }],
+      timeline: [{ id: 'sc', type: 'SIGN', user: '贺诗然', content: '签收', timestamp: '2026-07-01 09:00' }],
+    }),
+  ];
+
+  const metrics = buildWorkbenchStatusMetrics(items, 'person', 贺诗然);
+  const cardValue = (key: string) => metrics.find(m => m.key === key)!.value;
+  const drillCount = (key: string) => items.filter(i => isUserWorkbenchItem(key as any, i, 贺诗然)).length;
+
+  // 核心断言：五个卡片首页数字与下钻列表条数必须完全一致（一件多子任务不再被灌高）。
+  for (const key of ['pendingOpen', 'overdue', 'noFeedback', 'incomplete', 'completed'] as const) {
+    assert.equal(cardValue(key), drillCount(key), `【${key}】首页数字 ↔ 下钻条数 一一对应（同一事项多子任务场景）`);
+  }
+
+  // 具体值：OVERDUE 事项只计 1 条（不是 2），COMPLETED 计 1 条；下钻同样为 1。
+  assert.equal(cardValue('overdue'), 1, '同一事项 2 个 OVERDUE 子任务只计 1 条');
+  assert.equal(cardValue('completed'), 1, '已完成 1 件');
+  assert.equal(cardValue('incomplete'), 1, 'OVERDUE 事项未完成计入 1（COMPLETED 不计入）');
+  assert.equal(cardValue('noFeedback'), 1, 'OVERDUE 已签无反馈计入 1（不是 2）');
+  assert.equal(cardValue('pendingOpen'), 0, '已全部签收，待签收为 0');
+
+  // 副标题「涉及 N 件督办」须与首页大字数字相等（修复前 overdue 会出现 2 vs 涉及 1 件 的错位）。
+  const caption = (key: string) => metrics.find(m => m.key === key)!.caption;
+  assert.equal(caption('overdue'), '涉及 1 件督办');
+  assert.equal(caption('completed'), '涉及 1 件督办');
+});
+
+/* ----------------------------- 回归：截断时间轴导致未反馈计数 1↔0 波动（根因修复） ----------------------------- */
+
+/**
+ * 复现线上 刘维雷 账号问题：事项时间轴共 9 条，列表接口为控制体积只回传最近 5 条（slice(-5)）。
+ * 刘维雷 的 2 条 FEEDBACK 节点落在被截断部分。修复前前端用被截断的时间轴重算，
+ * 看不到他的反馈 → 误判为「未反馈」；修复后前端直接采用后端基于【完整时间轴】算出的 feedbackGiven 字段。
+ */
+test('person+currentUser：截断时间轴下按后端 feedbackGiven 判定，刘维雷本人未反馈稳定为 0（消除 1↔0 波动）', () => {
+  const 刘维雷 = { id: 'user-liu', name: '刘维雷', username: '00000002' };
+  // 模拟列表接口回传的「截断时间轴」：仅最近 5 条，已不含刘维雷的 FEEDBACK 节点。
+  // 这正是线上波动的根因：前端若用截断时间轴重算，会看不到他的反馈 → 误判为未反馈（计 1）。
+  const truncatedTimeline: TimelineNode[] = [
+    { id: 't4', type: 'APPLY_COMPLETE', user: '刘维雷', content: '', timestamp: '2026-08-17 06:50:41' },
+    { id: 't5', type: 'APPROVE', user: '贺诗然', content: '', timestamp: '2026-08-17 06:51:17' },
+    { id: 't6', type: 'APPROVE', user: '吴艺悦', content: '', timestamp: '2026-08-17 06:51:51' },
+    { id: 't7', type: 'SHARE', user: '姚玉玲', content: '', timestamp: '2026-08-17 06:54:50' },
+    { id: 't8', type: 'SIGN', user: '刘维雷', content: '', timestamp: '2026-08-17 07:04:21' },
+  ];
+  // 后端基于【完整时间轴】算出并随列表下发的权威标记：刘维雷已签收且已反馈。
+  const values = valuesByUser([
+    item({
+      id: 'cj-2026-006',
+      status: 'OVERDUE',
+      ownerName: '刘维雷',
+      ownerNames: ['刘维雷', '贺诗然', '吴艺悦'],
+      ownerIds: ['user-liu', 'user-he', 'user-wu'],
+      lastFeedbackDate: '2026-08-16T16:00:00.000Z',
+      subTasks: [
+        { ...subTask('刘维雷', 'EXECUTING'), assigneeId: 'user-liu', signed: true, feedbackGiven: true },
+        { ...subTask('贺诗然', 'EXECUTING'), assigneeId: 'user-he', signed: true, feedbackGiven: false },
+        { ...subTask('吴艺悦', 'EXECUTING'), assigneeId: 'user-wu', signed: true, feedbackGiven: false },
+      ],
+      timeline: truncatedTimeline,
+    }),
+  ], 刘维雷);
+
+  // 刘维雷 仅看自己的责任人任务：他本人已反馈 → 个人工作台「未反馈」稳定为 0，
+  // 彻底消除修复前「截断时间轴下有时误判为 1」的 1↔0 波动。
+  assert.equal(values.未反馈, 0, '刘维雷本人已反馈（后端 feedbackGiven=true）不被截断时间轴误判，个人未反馈稳定为 0');
+  assert.equal(values.待签收, 0, '刘维雷本人已签收（后端 signed=true），不计待签收');
+  assert.equal(values.未完成, 1, '刘维雷本人子任务 EXECUTING，计入未完成');
+});
+
+test('person：后端未下发 feedbackGiven 时回退到截断时间轴（兼容旧数据，复现修复前错误值）', () => {
+  // 仅验证回退路径的「存在性」：缺省 feedbackGiven 时，person 模式统计所有责任人，
+  // 截断时间轴下三人均无可见 FEEDBACK 节点 → 误判为 3（与修复前一致，仅作兼容说明）。
+  // 新链路通过后端 feedbackGiven 字段规避该错误（见上方 刘维雷 修复测试）。
+  const truncatedTimeline: TimelineNode[] = [
+    { id: 't4', type: 'APPLY_COMPLETE', user: '刘维雷', content: '', timestamp: '2026-08-17 06:50:41' },
+    { id: 't5', type: 'APPROVE', user: '贺诗然', content: '', timestamp: '2026-08-17 06:51:17' },
+    { id: 't6', type: 'APPROVE', user: '吴艺悦', content: '', timestamp: '2026-08-17 06:51:51' },
+    { id: 't7', type: 'SHARE', user: '姚玉玲', content: '', timestamp: '2026-08-17 06:54:50' },
+    { id: 't8', type: 'SIGN', user: '刘维雷', content: '', timestamp: '2026-08-17 07:04:21' },
+  ];
+  const values = valuesByTitle([
+    item({
+      id: 'cj-2026-006-legacy',
+      status: 'OVERDUE',
+      ownerName: '刘维雷',
+      ownerNames: ['刘维雷', '贺诗然', '吴艺悦'],
+      ownerIds: ['user-liu', 'user-he', 'user-wu'],
+      lastFeedbackDate: '2026-08-16T16:00:00.000Z',
+      subTasks: [
+        { ...subTask('刘维雷', 'EXECUTING'), assigneeId: 'user-liu' },
+        { ...subTask('贺诗然', 'EXECUTING'), assigneeId: 'user-he' },
+        { ...subTask('吴艺悦', 'EXECUTING'), assigneeId: 'user-wu' },
+      ],
+      timeline: truncatedTimeline,
+    }),
+  ]);
+
+  // 回退路径：截断时间轴下三人均无可见 FEEDBACK 节点 → 误判为 3（与修复前一致，仅作兼容说明）
+  assert.equal(values.未反馈, 3, '回退路径：截断时间轴下三人全被误判为未反馈（修复前行为）');
+  assert.equal(values.待签收, 0, '三人均已进入执行态，回退路径不计待签收');
+});
