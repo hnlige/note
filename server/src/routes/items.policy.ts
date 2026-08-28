@@ -329,10 +329,12 @@ export function mapTimelineNodeToAction(node: unknown): string | null {
 }
 
 // 普通字段编辑会落到 CHANGE_ITEM；这些字段已映射到各自专属动作，不应再触发 CHANGE_ITEM。
+// rejectReason 属于驳回（REJECT_ITEM）语义的一部分：MENU_MY_ITEMS 目录不含 CHANGE_ITEM，
+// 若让它触发普通编辑动作，跟进人/管理员在「我的督办」与移动端发起的驳回会被 403 拦截。
 const NON_GENERAL_FIELDS = new Set([
   'status', 'timeline', 'sharedWith', 'attachments', 'lastFeedbackDate', 'progress',
   'subTasks', 'deadline', 'plannedCompletionDate', 'deletedAt', 'deletedById',
-  'updatedAt', 'originalStatus',
+  'updatedAt', 'originalStatus', 'rejectReason',
 ]);
 
 const GENERAL_EDIT_FIELDS = new Set([

@@ -41,6 +41,18 @@ export function aggregateSubTaskStatus(subTasks: SubTask[]): ItemStatus {
 }
 
 /**
+ * 终审办结后的父事项状态。
+ * 无活动子任务（单责任人事项）终审即整体办结——聚合空子任务会误回退「待签收」，
+ * 导致单责任人审批链永远无法办结；有子任务时维持最差状态聚合，
+ * 未走到终审的责任人子任务不受影响。
+ */
+export function resolveFinalApprovalStatus(subTasks: SubTask[]): ItemStatus {
+  const active = subTasks.filter(task => task.status !== 'DELETED');
+  if (active.length === 0) return 'COMPLETED';
+  return aggregateSubTaskStatus(subTasks);
+}
+
+/**
  * 计算事项的「有效状态」。
  * 规则：
  * 1. 终态（已办结/已归档/已废弃/已删除/未按要求完成）直接返回；

@@ -5,7 +5,7 @@ import { getItemIdentityBackfill } from './items.backfill';
 import { AuthenticatedRequest } from './auth.middleware';
 import { canManageItems, canUseItemAction, canUseSubTaskMutationAction, getActionForItemUpdate, getInvalidItemUpdateFields, getRequiredActionsForItemUpdate, hasFollowerSelectionPayload, isFollowerCandidateUser, isFollowerFeedbackUpdatePayload, isSubTaskOnlyUpdatePayload, mapTimelineNodeToAction, normalizeFollowerSelection, sanitizeItemUpdates, validateItemStatusTransition } from './items.policy';
 import { computeSignOffStatus } from './sign-off';
-import { aggregateSubTaskStatus, derivePersistedItemStatus, getEffectiveItemStatus, shouldStartPendingItemAfterOwnerActivity } from '../lib/item-effective-status';
+import { aggregateSubTaskStatus, derivePersistedItemStatus, getEffectiveItemStatus, resolveFinalApprovalStatus, shouldStartPendingItemAfterOwnerActivity } from '../lib/item-effective-status';
 import { computeWorkbenchOwnerFlags } from '../lib/workbench-flags';
 import { buildItemAccessWhere, filterItemsByAccess, type AccessItemLike } from './access.policy';
 import { ensureNotificationIdentityColumns } from './notification.schema';
@@ -1707,7 +1707,10 @@ itemsRouter.put('/:id', async (req: AuthenticatedRequest & Request<{ id: string 
             : t,
         );
         updates.subTasks = nextSubTasks;
-        updates.status = aggregateSubTaskStatus(nextSubTasks as any);
+        updates.status = resolveFinalApprovalStatus(nextSubTasks as any);
+        if (updates.status === 'COMPLETED' && !normalizedCurrentItem.actualCompletionDate) {
+          updates.actualCompletionDate = new Date();
+        }
 
         // 通知被办结的责任人
         const ownerMessages = completedSubTasks

@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import * as policyModule from './items.policy';
-import { canManageItems, canUseItemAction, canUseSubTaskMutationAction, getActionForItemUpdate, getInvalidItemUpdateFields, isSubTaskOnlyUpdatePayload, normalizeFollowerSelection, sanitizeItemUpdates, validateItemStatusTransition } from './items.policy';
+import { canManageItems, canUseItemAction, canUseSubTaskMutationAction, getActionForItemUpdate, getInvalidItemUpdateFields, getRequiredActionsForItemUpdate, isSubTaskOnlyUpdatePayload, normalizeFollowerSelection, sanitizeItemUpdates, validateItemStatusTransition } from './items.policy';
 
 test('sanitizeItemUpdates keeps only the supported editable item fields', () => {
   const now = new Date('2026-06-15T10:00:00.000Z');
@@ -585,4 +585,29 @@ test('isSubTaskOnlyUpdatePayload recognizes subtask-only mutations so owner deta
   assert.equal(isSubTaskOnlyUpdatePayload({ subTasks: [{ id: 'st-1', status: 'COMPLETED' }], updatedAt: 'ignored' }), true);
   assert.equal(isSubTaskOnlyUpdatePayload({ subTasks: [{ id: 'st-1', status: 'COMPLETED' }], timeline: [] }), false);
   assert.equal(isSubTaskOnlyUpdatePayload({ title: '新标题' }), false);
+});
+
+test('驳回 payload 只要求 REJECT_ITEM：rejectReason 属驳回语义，不得再触发 CHANGE_ITEM', () => {
+  const payload = { status: 'EXECUTING', subTasks: [], rejectReason: '材料不全请补充' };
+  assert.deepEqual(
+    getRequiredActionsForItemUpdate(payload, 'REVIEWING'),
+    ['REJECT_ITEM'],
+  );
+});
+
+test('「我的督办」上下文允许 REJECT_ITEM，前端驳回链路不再被页面目录拦截', () => {
+  const followerRole = {
+    permissions: ['MENU_MY_ITEMS', 'MENU_ITEMS'],
+    allowedActions: ['READ', 'SEARCH', 'REJECT_ITEM', 'APPROVE_ITEM'],
+    allowedPageActions: {},
+  };
+  assert.equal(
+    canUseItemAction({ roleConfig: followerRole, pageAuth: 'MENU_MY_ITEMS', action: 'REJECT_ITEM' }),
+    true,
+  );
+  // 对照：一般编辑字段在「我的督办」目录下仍应被拒（目录不含 CHANGE_ITEM）
+  assert.equal(
+    canUseItemAction({ roleConfig: followerRole, pageAuth: 'MENU_MY_ITEMS', action: 'CHANGE_ITEM' }),
+    false,
+  );
 });
