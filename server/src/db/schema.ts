@@ -108,7 +108,7 @@ export const urgeRecords = mysqlTable('urge_records', {
   content: text('content'),
   method: varchar('method', { length: 20 }).notNull().default('MESSAGE'),
   batchId: varchar('batch_id', { length: 36 }),
-  subTaskId: varchar('sub_task_id', { length: 36 }),
+  subTaskId: varchar('sub_task_id', { length: 128 }),
   idempotencyKey: varchar('idempotency_key', { length: 64 }),
   scope: varchar('scope', { length: 20 }).notNull().default('SINGLE_ASSIGNEE'),
   source: varchar('source', { length: 20 }).notNull().default('MANUAL'),

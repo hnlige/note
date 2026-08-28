@@ -13,7 +13,7 @@ test('getDatabaseSchemaAlterStatements includes the persisted sub task column', 
   assert.ok(statements.includes('ALTER TABLE items ADD COLUMN IF NOT EXISTS sub_tasks text NULL'));
   assert.ok(statements.includes('ALTER TABLE urge_records ADD COLUMN IF NOT EXISTS content text NULL'));
   assert.ok(statements.includes('ALTER TABLE urge_records ADD COLUMN IF NOT EXISTS batch_id varchar(36) NULL'));
-  assert.ok(statements.includes('ALTER TABLE urge_records ADD COLUMN IF NOT EXISTS sub_task_id varchar(36) NULL'));
+  assert.ok(statements.includes('ALTER TABLE urge_records ADD COLUMN IF NOT EXISTS sub_task_id varchar(128) NULL'));
   assert.ok(statements.includes('ALTER TABLE urge_records ADD COLUMN IF NOT EXISTS idempotency_key varchar(64) NULL'));
   assert.ok(statements.includes("ALTER TABLE urge_records ADD COLUMN IF NOT EXISTS scope varchar(20) NOT NULL DEFAULT 'SINGLE_ASSIGNEE'"));
   assert.ok(statements.includes("ALTER TABLE urge_records ADD COLUMN IF NOT EXISTS source varchar(20) NOT NULL DEFAULT 'MANUAL'"));
@@ -33,6 +33,7 @@ test('getDatabaseSchemaFixStatements includes list and automatic-engine indexes'
   assert.ok(statements.includes('CREATE INDEX urge_records_batch_item_receiver_idx ON urge_records (batch_id, item_id, receiver_id, sub_task_id)'));
   assert.ok(statements.includes('CREATE UNIQUE INDEX urge_records_idempotency_key_unique ON urge_records (idempotency_key)'));
   assert.ok(statements.includes('CREATE INDEX urge_records_scope_source_idx ON urge_records (scope, source, timestamp)'));
+  assert.ok(statements.includes('ALTER TABLE urge_records MODIFY COLUMN sub_task_id varchar(128) NULL'));
 });
 
 test('ensureDatabaseSchema executes alter and fix statements when base schema already exists', async () => {

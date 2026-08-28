@@ -46,13 +46,17 @@ export const ItemCard: React.FC<ItemCardProps> = ({ item, actionLabel, onAction 
               <User className="w-3 h-3" /> {ownerLabel}
             </span>
             <span className="flex items-center gap-1">
-              <Clock className="w-3 h-3" /> 截止 {item.deadline?.split(' ')[0] || '未设'}
+              <Clock className="w-3 h-3" /> 截止 {item.requiredCompletionDate || item.deadline?.split(' ')[0] || '未设'}
             </span>
           </div>
         </div>
 
         <div className="flex flex-col items-end gap-2 shrink-0">
-          <RemainingDays deadline={item.deadline} status={status} />
+          <RemainingDays
+            deadline={item.deadline}
+            requiredCompletionDate={item.requiredCompletionDate}
+            status={status}
+          />
           {actionLabel && onAction ? (
             <button
               onClick={(e) => {

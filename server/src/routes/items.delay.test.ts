@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { buildDelayActorSubTasks, hasDelayTimelineNode, ensureItemActorAllowed } from './items';
+import { buildDelayActorSubTasks, getLatestSubTaskPlannedDate, hasDelayTimelineNode, ensureItemActorAllowed } from './items';
 
 test('buildDelayActorSubTasks moves only the applying owner subtask to DELAYED with the new dates', () => {
   const subTasks = [
@@ -68,4 +68,27 @@ test('feedback action allows owner whose subtask was moved to DELAYED by the ext
 
   assert.equal(ensureItemActorAllowed(accessContext as any, 'FEEDBACK_ITEM', delayedItem, response), true);
   assert.equal(state.status, undefined);
+});
+
+test('getLatestSubTaskPlannedDate 取全部子任务的最晚计划日期（整体口径）', () => {
+  const subTasks = [
+    { id: 'st-1', assigneeName: '魏红义', status: 'DELAYED', plannedCompletionDate: '2026-09-28', deadline: '2026-09-28' },
+    { id: 'st-2', assigneeName: '申林', status: 'EXECUTING', plannedCompletionDate: '2026-08-31', deadline: '2026-08-31' },
+  ];
+
+  const latest = getLatestSubTaskPlannedDate(subTasks);
+
+  assert.ok(latest);
+  assert.equal(latest.getFullYear(), 2026);
+  assert.equal(latest.getMonth() + 1, 9);
+  assert.equal(latest.getDate(), 28);
+});
+
+test('getLatestSubTaskPlannedDate 跳过空日期子任务并兼容缺失场景', () => {
+  assert.equal(getLatestSubTaskPlannedDate([
+    { id: 'st-1', assigneeName: '申林', status: 'PENDING' },
+    { id: 'st-2', assigneeName: '魏红义', status: 'DELAYED', plannedCompletionDate: '2026-09-28' },
+  ])?.getFullYear(), 2026);
+  assert.equal(getLatestSubTaskPlannedDate([]), null);
+  assert.equal(getLatestSubTaskPlannedDate(undefined), null);
 });

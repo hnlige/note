@@ -235,6 +235,19 @@ export function getEffectiveStatusForUserIdentity(item: SupervisionItem, user: P
   return subTask.status;
 }
 
+/**
+ * 催办时间轴内容展示：历史数据以 `(SYSTEM)` 等英文枚举结尾，统一替换为中文
+ * （站内推送/消息通知/电话催办），与新数据（服务端已直接写入中文）保持一致。
+ */
+export function formatUrgeTimelineContent(content?: string | null): string {
+  const value = String(content || '');
+  return value.replace(/ ?[(（](SYSTEM|MESSAGE|PHONE)[)）]/g, (_match, method: string) => {
+    if (method === 'SYSTEM') return '（站内推送）';
+    if (method === 'PHONE') return '（电话催办）';
+    return '（消息通知）';
+  });
+}
+
 export function aggregateSubTaskStatus(subTasks: SubTask[]): ItemStatus {
   const statuses = subTasks.map(task => task.status).filter(status => status !== 'DELETED');
   if (statuses.length === 0) return 'PENDING';

@@ -37,7 +37,7 @@ import { motion } from 'framer-motion';
 import { Drawer } from '../../components/Common/Drawer';
 import { PaginationFooter } from '../../components/Common/PaginationFooter';
 import { AllowedAction, Attachment, DeptNode, TimelineNode } from '../../types';
-import { formatDate, getEffectiveItemStatus, getEffectiveStatusForUserIdentity, getItemSignOffStatus, getItemStatusLabel, getItemStatusStyle, getSignOffStatusLabel, getSignOffStatusStyle, getUserSubTaskForIdentity, isItemFollowerForUser, isItemOwnerForUser, isManualDateOnOrAfter, isValidManualDateInput, normalizeManualDateInput, todayDateString, updateUserSubTaskForIdentity, formatDateTime } from '../../lib/item-format';
+import { formatDate, formatUrgeTimelineContent, getEffectiveItemStatus, getEffectiveStatusForUserIdentity, getItemSignOffStatus, getItemStatusLabel, getItemStatusStyle, getSignOffStatusLabel, getSignOffStatusStyle, getUserSubTaskForIdentity, isItemFollowerForUser, isItemOwnerForUser, isManualDateOnOrAfter, isValidManualDateInput, normalizeManualDateInput, todayDateString, updateUserSubTaskForIdentity, formatDateTime } from '../../lib/item-format';
 import { canUseAllowedAction, getAssignedRoleIds } from '../../store/role-access';
 import { getDetailBackNavigation, getDetailPageAuth, getMessageIdFromDetailState } from './detail-navigation';
 import { paginateTimelineNodes, prepareTimelineNodes, TIMELINE_PAGE_SIZE_OPTIONS } from './detail-timeline-pagination';
@@ -258,12 +258,10 @@ const ItemDetail: React.FC = () => {
   const normalizedIssuerIdentity = String(item?.issuerAccount || item?.issuerId || '').trim().toLowerCase();
   const currentIdentityKeys = [currentUser.id, currentUser.name, currentUser.username].map(value => String(value || '').trim().toLowerCase()).filter(Boolean);
   const currentOwnerSubTask = item ? getUserSubTaskForIdentity(item, currentUser) : undefined;
-  // 签收时是否需要填写计划完成日期：只看子任务/事项的 plannedCompletionDate 是否为空。
-  // 不再把 requiredCompletionDate（要求完成日期）算作已填——签收必须写入 plannedCompletionDate，
-  // 否则子任务的计划完成日期会永久为空。
-  const requiresPlannedDateOnSign = item
-    ? (currentOwnerSubTask ? !currentOwnerSubTask.plannedCompletionDate : !item.plannedCompletionDate)
-    : false;
+  // 签收时的计划完成日期来源：有要求完成日期时直接按要求日期签收（后端同样口径，且不允许责任人覆盖），
+  // 仅在完全没有要求完成日期时才要求责任人补填计划完成日期。
+  const requiredCompletionDateForSign = currentOwnerSubTask?.requiredCompletionDate || item?.requiredCompletionDate || '';
+  const requiresPlannedDateOnSign = item ? (!requiredCompletionDateForSign && (currentOwnerSubTask ? !currentOwnerSubTask.plannedCompletionDate : !item.plannedCompletionDate)) : false;
   const canLegacyEdit = canUseAllowedAction(currentUser, roles, 'EDIT_ITEM');
   const canPerform = (action: AllowedAction) =>
     canLegacyEdit || canUseAllowedAction(currentUser, roles, action);
@@ -417,8 +415,9 @@ const ItemDetail: React.FC = () => {
         content: urgeContent
       }),
     ));
-    if (results.some(result => !result)) {
-      showToast('发起催办失败，请确认责任人后重试', 'error');
+    const failedResult = results.find(result => !result.ok);
+    if (failedResult) {
+      showToast(failedResult.error || '发起催办失败，请确认责任人后重试', 'error');
       return;
     }
     addActivity({
@@ -650,10 +649,12 @@ const ItemDetail: React.FC = () => {
     addLog({ userName: currentUser.name, userId: currentUser.id, action: '撤销事项共享', module: '督办事项' });
   };
 
-  const handleSign = (plannedDate?: string) => {
+  const handleSign = (plannedDate?: string, options?: { useRequiredDate?: boolean }) => {
     if (!item) return;
     const normalizedPlannedDate = plannedDate ? normalizeManualDateInput(plannedDate) : undefined;
-    if (normalizedPlannedDate) {
+    // 直接按跟进人下发的要求完成日期签收时不做"不早于今天"拦截：该日期是既定截止依据，
+    // 超期未签收的场景仍应允许签收（后端签收同样直接采用要求日期，无此校验）。
+    if (normalizedPlannedDate && !options?.useRequiredDate) {
       if (!isValidManualDateInput(normalizedPlannedDate)) {
         showToast('计划完成日期请按年/月/日格式输入，例如：2026/06/03', 'warning');
         return;
@@ -686,7 +687,8 @@ const ItemDetail: React.FC = () => {
       setIsSignOpen(true);
       return;
     }
-    handleSign();
+    // 有要求完成日期：直接按要求日期签收，无需责任人再填计划完成日期
+    handleSign(requiredCompletionDateForSign || undefined, { useRequiredDate: true });
   };
 
   const handleSubTaskSubmit = async () => {
@@ -1126,7 +1128,7 @@ const ItemDetail: React.FC = () => {
                       <span className="text-xs font-medium text-slate-400">{formatDateTime(node.timestamp)}</span>
                     </div>
                     <div className="bg-slate-50/50 rounded-2xl p-4 border border-slate-50">
-                      <p className="text-sm text-slate-700 leading-relaxed">{node.content}</p>
+                      <p className="text-sm text-slate-700 leading-relaxed">{formatUrgeTimelineContent(node.content)}</p>
                       {node.attachments?.map((att, i) => (
                         <div key={i} className="mt-2 inline-flex items-center gap-2 bg-white px-2 py-1 rounded-lg text-xs text-blue-600 border border-blue-100">
                           <FileText className="w-3 h-3" />

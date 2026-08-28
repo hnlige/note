@@ -42,11 +42,12 @@ export const MobileMessages: React.FC = () => {
   }, [syncMessages]);
 
   const filtered = useMemo(() => {
+    // 与桌面端消息中心口径一致：待办/催办/通知分类仅展示未读，已读消息统一归入「已读」
     return messages.filter(m => {
-      if (filter === 'TODO') return m.type === 'TODO';
-      if (filter === 'URGE') return m.type === 'URGE';
+      if (filter === 'TODO') return m.type === 'TODO' && !m.read;
+      if (filter === 'URGE') return m.type === 'URGE' && !m.read;
       if (filter === 'READ') return m.read;
-      if (filter === 'NOTICE') return m.type === 'NOTICE';
+      if (filter === 'NOTICE') return m.type === 'NOTICE' && !m.read;
       return true;
     });
   }, [messages, filter]);

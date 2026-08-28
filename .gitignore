@@ -80,3 +80,10 @@ scripts/verify-timeline-pagination.cjs
 # 本地 AI 会话计划与线上验证产物（截图/JSON 报告），不入库
 .zcode/
 outputs/
+
+# Playwright E2E 产物
+test-results/
+playwright-report/
+
+# TypeScript 增量构建产物
+*.tsbuildinfo

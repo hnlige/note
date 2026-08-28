@@ -187,7 +187,8 @@ wait_for_public_backend_ready() {
     local container_database_target_id="$6"
     local container_runtime_id="$7"
     local health_url="http://127.0.0.1/api/health"
-    local max_attempts=30
+    # 2C2G 单机上结构补齐/角色刷新可能让冷启动超过 60s，放宽到 90 次（3 分钟）；仍不健康则照常失败。
+    local max_attempts=90
     local attempt=1
 
     PUBLIC_RUNTIME_MODE=""

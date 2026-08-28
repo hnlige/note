@@ -9,6 +9,7 @@
     "lint": "eslint .",
     "preview": "vite preview --host 0.0.0.0",
     "test": "./server/node_modules/.bin/tsx --test \"src/**/*.test.ts\" \"server/src/**/*.test.ts\"",
+    "test:e2e": "playwright test",
     "check": "tsc -b --noEmit"
   },
   "dependencies": {

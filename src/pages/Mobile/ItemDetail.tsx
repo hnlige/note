@@ -15,6 +15,7 @@ import {
   isManualDateOnOrAfter,
   todayDateString,
   formatDateTime,
+  formatUrgeTimelineContent,
 } from '../../lib/item-format';
 import { MobileLayout } from './Layout';
 import { StatusBadge, LightBadge } from './components/StatusBadge';
@@ -124,6 +125,14 @@ export const MobileItemDetail: React.FC = () => {
   const requirePlannedDate = item
     ? !requiredCompletionDate && (currentOwnerSubTask ? !currentOwnerSubTask.plannedCompletionDate : !item.plannedCompletionDate)
     : false;
+  // 多责任人场景：责任人的计划完成日期以本人子任务为准（各自签收/延期互不影响），
+  // 父级 plannedCompletionDate/deadline 只是整体口径（全部子任务的最晚日期）。
+  const ownerPlannedDate = currentOwnerSubTask
+    ? (currentOwnerSubTask.plannedCompletionDate || currentOwnerSubTask.deadline || item?.plannedCompletionDate || '')
+    : (item?.plannedCompletionDate || '');
+  const ownerRequiredDate = currentOwnerSubTask
+    ? (currentOwnerSubTask.requiredCompletionDate || '')
+    : (item?.requiredCompletionDate || item?.deadline?.split(' ')[0] || '');
 
   // ─── 签收 ───
   const handleSign = async (plannedDate?: string) => {
@@ -162,7 +171,7 @@ export const MobileItemDetail: React.FC = () => {
   };
 
   // ─── 反馈 ───
-  const handleFeedback = async (payload: { content: string; progress: string; files: File[] }) => {
+  const handleFeedback = async (payload: { content: string; files: File[] }) => {
     if (!item) return;
     const isFollowerFeedback = isFollower && !isOwner;
     let uploadedAttachments: Attachment[] = [];
@@ -174,11 +183,8 @@ export const MobileItemDetail: React.FC = () => {
       showToast(err?.message || '附件上传失败，请稍后重试', 'error');
       return;
     }
-    const progress = payload.progress === 'COMPLETED'
-      ? 100
-      : payload.progress === 'NOT_START'
-        ? 0
-        : Math.max(item.progress || 0, 10);
+    // 移动端反馈不再让用户手选进度，进度数字保持不变（首次反馈按 10% 起步），办结统一走「申请完成」审批。
+    const progress = Math.max(item.progress || 0, 10);
     const newNode: TimelineNode = {
       id: 't' + Date.now(),
       type: isFollowerFeedback ? 'FOLLOWER_FEEDBACK' : 'FEEDBACK',
@@ -455,7 +461,11 @@ export const MobileItemDetail: React.FC = () => {
         <div className="flex items-center justify-between mb-2">
           <div className="flex items-center gap-2">
             <StatusBadge status={displayStatus} />
-            <RemainingDays deadline={currentOwnerSubTask?.deadline || item.deadline} status={displayStatus} />
+            <RemainingDays
+              deadline={currentOwnerSubTask?.deadline || item.deadline}
+              requiredCompletionDate={currentOwnerSubTask?.requiredCompletionDate || item.requiredCompletionDate}
+              status={displayStatus}
+            />
             <LightBadge lightStatus={item.lightStatus} />
           </div>
           {signOff && signOff.status === 'PARTIAL' && (
@@ -475,9 +485,9 @@ export const MobileItemDetail: React.FC = () => {
           <Clock className="w-4 h-4 text-slate-400 shrink-0 mt-0.5" />
           <div className="flex-1">
             <span className="text-slate-400">要求完成日期：</span>
-            <span className="text-slate-700 font-medium">{item.requiredCompletionDate || item.deadline?.split(' ')[0] || '-'}</span>
-            {item.plannedCompletionDate && item.plannedCompletionDate !== item.requiredCompletionDate && (
-              <span className="ml-2 text-slate-400">（计划 {item.plannedCompletionDate}）</span>
+            <span className="text-slate-700 font-medium">{ownerRequiredDate || '-'}</span>
+            {ownerPlannedDate && ownerPlannedDate !== ownerRequiredDate && (
+              <span className="ml-2 text-slate-400">（计划 {ownerPlannedDate}）</span>
             )}
           </div>
         </div>
@@ -522,7 +532,7 @@ export const MobileItemDetail: React.FC = () => {
                     <span className="text-xs font-bold text-slate-700">{node.user}</span>
                     <span className="text-[10px] text-slate-400">{formatDateTime(node.timestamp)}</span>
                   </div>
-                  <p className="text-xs text-slate-600 leading-relaxed break-words">{node.content}</p>
+                  <p className="text-xs text-slate-600 leading-relaxed break-words">{formatUrgeTimelineContent(node.content)}</p>
                   {node.attachments && node.attachments.length > 0 && (
                     <div className="mt-1 flex flex-wrap gap-1">
                       {node.attachments.map(att => (

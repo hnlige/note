@@ -90,9 +90,14 @@ export const TaskList: React.FC = () => {
     }
   }, [page, pagination.currentPage]);
 
-  // 签收时是否需要填写计划完成日期：只看 plannedCompletionDate 是否为空。
-  // 不再把 requiredCompletionDate 算作已填——签收必须写入 plannedCompletionDate。
+  // 签收时的计划完成日期来源：有要求完成日期时直接按要求日期签收（后端同样口径，且不允许责任人覆盖），
+  // 仅在完全没有要求完成日期时才要求责任人补填计划完成日期。
+  const getRequiredCompletionDateForSign = (item: SupervisionItem) => {
+    const subTask = getUserSubTaskForIdentity(item, currentUser);
+    return subTask?.requiredCompletionDate || item.requiredCompletionDate || '';
+  };
   const requiresPlannedDateOnSign = (item: SupervisionItem) => {
+    if (getRequiredCompletionDateForSign(item)) return false;
     const subTask = getUserSubTaskForIdentity(item, currentUser);
     if (subTask) return !subTask.plannedCompletionDate;
     return !item.plannedCompletionDate;
@@ -104,11 +109,13 @@ export const TaskList: React.FC = () => {
     setSignPlannedDate('');
   };
 
-  const handleSign = async (plannedDate?: string) => {
+  const handleSign = async (plannedDate?: string, options?: { useRequiredDate?: boolean }) => {
     if (!signTargetItem) return;
     const target = signTargetItem;
     const normalizedPlannedDate = plannedDate ? normalizeManualDateInput(plannedDate) : undefined;
-    if (normalizedPlannedDate) {
+    // 直接按跟进人下发的要求完成日期签收时不做"不早于今天"拦截：该日期是既定截止依据，
+    // 超期未签收的场景仍应允许签收（后端签收同样直接采用要求日期，无此校验）。
+    if (normalizedPlannedDate && !options?.useRequiredDate) {
       if (!isValidManualDateInput(normalizedPlannedDate)) {
         showToast('计划完成日期请按年/月/日格式输入，例如：2026/06/03', 'warning');
         return;
@@ -167,7 +174,8 @@ export const TaskList: React.FC = () => {
       return;
     }
     setSignTargetItem(item);
-    handleSign();
+    // 有要求完成日期：直接按要求日期签收，无需责任人再填计划完成日期
+    handleSign(getRequiredCompletionDateForSign(item) || undefined, { useRequiredDate: true });
   };
 
   const handleFeedbackSubmit = () => {

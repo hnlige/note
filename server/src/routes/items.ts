@@ -102,6 +102,25 @@ export function hasDelayTimelineNode(nodes: unknown): boolean {
 }
 
 /**
+ * 多责任人场景下父级计划/截止日期取全部子任务计划日期的最晚值（整体口径）。
+ * 任一责任人申请延期只应影响本人子任务日期，不能覆盖其他责任人已填写的计划完成日期。
+ */
+export function getLatestSubTaskPlannedDate(subTasks: unknown): Date | null {
+  if (!Array.isArray(subTasks)) return null;
+  let latest: Date | null = null;
+  for (const task of subTasks as Array<Record<string, unknown>>) {
+    const raw = typeof task?.plannedCompletionDate === 'string' && task.plannedCompletionDate.trim()
+      ? task.plannedCompletionDate
+      : (typeof task?.deadline === 'string' && task.deadline.trim() ? task.deadline : '');
+    if (!raw) continue;
+    const date = new Date(raw);
+    if (Number.isNaN(date.getTime())) continue;
+    if (!latest || date > latest) latest = date;
+  }
+  return latest;
+}
+
+/**
  * 获取当前责任人对应的子任务，兼容 ID、姓名和账号三种身份标识。
  */
 function getActorSubTask(item: Record<string, unknown>, actor: ItemActor): Record<string, unknown> | undefined {
@@ -209,7 +228,8 @@ function formatDateOnly(v: unknown): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
-async function backfillItemUserIdentities(db: any, items: any[], knownUsers?: Array<{ id: string; name?: string | null; username?: string | null }>) {
+// 供其他路由（如催办）在行级权限过滤前规整 TEXT 列 JSON，与详情/列表接口保持同一口径。
+export async function backfillItemUserIdentities(db: any, items: any[], knownUsers?: Array<{ id: string; name?: string | null; username?: string | null }>) {
   const { users: usersTable } = await import('../db/schema');
   const users = knownUsers || await db.select({
     id: usersTable.id,
@@ -375,7 +395,7 @@ export function normalizeItemJsonFields<T extends Record<string, any>>(item: T):
   };
 }
 
-function normalizeItemsJsonFields<T extends Record<string, any>>(items: T[]): T[] {
+export function normalizeItemsJsonFields<T extends Record<string, any>>(items: T[]): T[] {
   return items.map(item => normalizeItemJsonFields(item));
 }
 
@@ -1897,6 +1917,19 @@ itemsRouter.put('/:id', async (req: AuthenticatedRequest & Request<{ id: string 
         );
         if (delayActorSubTasks) {
           updates.subTasks = delayActorSubTasks;
+        }
+      }
+
+      // 多责任人：延期日期只属于申请人的子任务；父级计划/截止日期取全部子任务的最晚计划日期，
+      // 避免某一位责任人延期后覆盖其他责任人已填写的计划完成日期（与签收/反馈的父级保护同口径）。
+      const delayMergedSubTasks = Array.isArray(updates.subTasks)
+        ? updates.subTasks
+        : (Array.isArray(normalizedCurrentItem.subTasks) ? normalizedCurrentItem.subTasks : null);
+      if (delayMergedSubTasks && delayMergedSubTasks.length > 1) {
+        const latestSubTaskPlannedDate = getLatestSubTaskPlannedDate(delayMergedSubTasks);
+        if (latestSubTaskPlannedDate) {
+          updates.plannedCompletionDate = latestSubTaskPlannedDate;
+          updates.deadline = latestSubTaskPlannedDate;
         }
       }
 

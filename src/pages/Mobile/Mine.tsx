@@ -2,8 +2,10 @@ import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useStore } from '../../store/useStore';
 import { api, AUTH_TOKEN_KEY, hasAuthToken } from '../../lib/api';
+import { useToast } from '../../components/Common/Toast';
 import { MobileLayout } from './Layout';
-import { User, Building2, Shield, Bell, LogOut, ChevronRight, Loader2 } from 'lucide-react';
+import { ModalShell, FieldLabel } from './components/ModalShell';
+import { User, Building2, Shield, Bell, KeyRound, LogOut, ChevronRight, Loader2 } from 'lucide-react';
 
 const ROLE_LABEL: Record<string, string> = {
   ADMIN: '管理员',
@@ -17,6 +19,11 @@ export const MobileMine: React.FC = () => {
   const [preferences, setPreferences] = useState<{ site?: boolean; email?: boolean; sms?: boolean } | null>(null);
   const [loadingPrefs, setLoadingPrefs] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
+  const [pwdOpen, setPwdOpen] = useState(false);
+  const [pwdForm, setPwdForm] = useState({ oldPwd: '', newPwd: '', confirmPwd: '' });
+  const [pwdError, setPwdError] = useState('');
+  const [pwdSubmitting, setPwdSubmitting] = useState(false);
+  const { showToast } = useToast();
 
   useEffect(() => {
     if (!hasAuthToken()) {
@@ -58,6 +65,33 @@ export const MobileMine: React.FC = () => {
       // storage 不可用时直接跳转即可
     }
     window.location.replace('/m/login');
+  };
+
+  const openPwdModal = () => {
+    setPwdForm({ oldPwd: '', newPwd: '', confirmPwd: '' });
+    setPwdError('');
+    setPwdOpen(true);
+  };
+
+  const handleChangePassword = async () => {
+    if (!pwdForm.oldPwd) { setPwdError('请输入当前密码'); return; }
+    if (pwdForm.newPwd.length < 6) { setPwdError('新密码长度不能少于6位'); return; }
+    if (pwdForm.newPwd.length > 72) { setPwdError('新密码不能超过72个字符'); return; }
+    if (pwdForm.newPwd === pwdForm.oldPwd) { setPwdError('新密码不能与当前密码相同'); return; }
+    if (pwdForm.newPwd !== pwdForm.confirmPwd) { setPwdError('两次输入的新密码不一致'); return; }
+
+    setPwdError('');
+    setPwdSubmitting(true);
+    try {
+      await api.auth.changePassword(pwdForm.oldPwd, pwdForm.newPwd);
+      setPwdOpen(false);
+      setPwdForm({ oldPwd: '', newPwd: '', confirmPwd: '' });
+      showToast('密码修改成功，请使用新密码重新登录', 'success');
+    } catch (error) {
+      setPwdError(error instanceof Error ? error.message : '密码修改失败');
+    } finally {
+      setPwdSubmitting(false);
+    }
   };
 
   const prefItems: { key: 'site' | 'email' | 'sms'; label: string }[] = [
@@ -119,6 +153,18 @@ export const MobileMine: React.FC = () => {
         </div>
       </div>
 
+      {/* 账号设置 */}
+      <button
+        onClick={openPwdModal}
+        className="w-full bg-white rounded-2xl border border-slate-100 p-4 mb-4 flex items-center justify-between active:scale-[0.99] transition-all"
+      >
+        <div className="flex items-center gap-3">
+          <KeyRound className="w-4 h-4 text-slate-400" />
+          <span className="text-sm text-slate-700 font-medium">修改密码</span>
+        </div>
+        <ChevronRight className="w-4 h-4 text-slate-300" />
+      </button>
+
       {/* 帮助 */}
       <button
         onClick={() => navigate('/m/home')}
@@ -144,6 +190,59 @@ export const MobileMine: React.FC = () => {
         )}
         <span className="text-sm text-red-500 font-bold">退出登录</span>
       </button>
+
+      {/* 修改密码弹窗 */}
+      <ModalShell
+        title="修改密码"
+        open={pwdOpen}
+        onClose={() => setPwdOpen(false)}
+        onSubmit={handleChangePassword}
+        submitLabel="确认修改"
+        submitDisabled={!pwdForm.oldPwd || !pwdForm.newPwd || !pwdForm.confirmPwd}
+        submitting={pwdSubmitting}
+        hasContent={Boolean(pwdForm.oldPwd || pwdForm.newPwd || pwdForm.confirmPwd)}
+      >
+        <div className="space-y-4">
+          <div>
+            <FieldLabel required>当前密码</FieldLabel>
+            <input
+              type="password"
+              value={pwdForm.oldPwd}
+              onChange={(e) => setPwdForm(f => ({ ...f, oldPwd: e.target.value }))}
+              placeholder="请输入当前密码"
+              autoComplete="current-password"
+              className="w-full border border-slate-200 rounded-xl p-3 text-sm focus:ring-2 focus:ring-blue-500 transition-all outline-none"
+            />
+          </div>
+          <div>
+            <FieldLabel required hint="至少6位">
+              新密码
+            </FieldLabel>
+            <input
+              type="password"
+              value={pwdForm.newPwd}
+              onChange={(e) => setPwdForm(f => ({ ...f, newPwd: e.target.value }))}
+              placeholder="请输入新密码（至少6位）"
+              autoComplete="new-password"
+              className="w-full border border-slate-200 rounded-xl p-3 text-sm focus:ring-2 focus:ring-blue-500 transition-all outline-none"
+            />
+          </div>
+          <div>
+            <FieldLabel required>确认新密码</FieldLabel>
+            <input
+              type="password"
+              value={pwdForm.confirmPwd}
+              onChange={(e) => setPwdForm(f => ({ ...f, confirmPwd: e.target.value }))}
+              placeholder="请再次输入新密码"
+              autoComplete="new-password"
+              className="w-full border border-slate-200 rounded-xl p-3 text-sm focus:ring-2 focus:ring-blue-500 transition-all outline-none"
+            />
+          </div>
+          {pwdError && (
+            <p className="text-xs text-red-500 font-bold bg-red-50 rounded-lg px-3 py-2">{pwdError}</p>
+          )}
+        </div>
+      </ModalShell>
     </MobileLayout>
   );
 };

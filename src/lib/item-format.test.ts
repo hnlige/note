@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { getEffectiveItemStatus, getEffectiveStatusForUserIdentity, getItemSignOffStatus, getMobileItemStatus, isItemOwnerForUser, isItemRelatedToUser } from './item-format.ts';
+import { formatUrgeTimelineContent, getEffectiveItemStatus, getEffectiveStatusForUserIdentity, getItemSignOffStatus, getMobileItemStatus, isItemOwnerForUser, isItemRelatedToUser } from './item-format.ts';
 import { SupervisionItem } from '../types';
 
 const baseItem: SupervisionItem = {
@@ -301,4 +301,26 @@ test('getEffectiveItemStatus 签收后的展示状态只认后端 effectiveStatu
 
   assert.equal(getEffectiveItemStatus(timelineOnlyItem), 'PENDING');
   assert.equal(getEffectiveItemStatus({ ...timelineOnlyItem, effectiveStatus: 'EXECUTING' }), 'EXECUTING');
+});
+
+test('formatUrgeTimelineContent 将历史英文枚举后缀替换为中文', () => {
+  assert.equal(
+    formatUrgeTimelineContent('【催办】请尽快反馈 (SYSTEM)'),
+    '【催办】请尽快反馈（站内推送）',
+  );
+  assert.equal(
+    formatUrgeTimelineContent('【催办】电话联系 (PHONE)'),
+    '【催办】电话联系（电话催办）',
+  );
+  assert.equal(
+    formatUrgeTimelineContent('【催办】请反馈 (MESSAGE)'),
+    '【催办】请反馈（消息通知）',
+  );
+  // 新数据已是中文，原样保留
+  assert.equal(
+    formatUrgeTimelineContent('【催办】请反馈（站内推送）'),
+    '【催办】请反馈（站内推送）',
+  );
+  assert.equal(formatUrgeTimelineContent('普通反馈内容'), '普通反馈内容');
+  assert.equal(formatUrgeTimelineContent(undefined), '');
 });

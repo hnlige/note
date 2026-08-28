@@ -48,7 +48,7 @@ const schemaColumns: readonly ColumnSpec[] = [
   { tableName: 'timeline_nodes', columnName: 'actor_user_id', definition: 'varchar(36) NULL' },
   { tableName: 'urge_records', columnName: 'content', definition: 'text NULL' },
   { tableName: 'urge_records', columnName: 'batch_id', definition: 'varchar(36) NULL' },
-  { tableName: 'urge_records', columnName: 'sub_task_id', definition: 'varchar(36) NULL' },
+  { tableName: 'urge_records', columnName: 'sub_task_id', definition: 'varchar(128) NULL' },
   { tableName: 'urge_records', columnName: 'idempotency_key', definition: 'varchar(64) NULL' },
   { tableName: 'urge_records', columnName: 'scope', definition: "varchar(20) NOT NULL DEFAULT 'SINGLE_ASSIGNEE'" },
   { tableName: 'urge_records', columnName: 'source', definition: "varchar(20) NOT NULL DEFAULT 'MANUAL'" },
@@ -101,6 +101,8 @@ const schemaFixStatements: readonly string[] = [
   '  )',
   'ALTER TABLE operation_logs MODIFY COLUMN timestamp datetime NOT NULL DEFAULT CURRENT_TIMESTAMP',
   'ALTER TABLE global_rules MODIFY COLUMN wecom_corp_secret varchar(512) NULL',
+  // 历史数据存在 `${itemId}-${assigneeId}` 形态的复合子任务 ID（可达 74 字符），varchar(36) 会直接插入失败。
+  'ALTER TABLE urge_records MODIFY COLUMN sub_task_id varchar(128) NULL',
 ];
 
 let ensureDatabaseSchemaPromise: Promise<void> | null = null;

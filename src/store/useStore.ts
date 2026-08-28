@@ -94,7 +94,7 @@ interface WorkbenchState {
   deleteTemplate: (id: string) => Promise<void>;
   publishTemplate: (id: string) => Promise<void>;
   unpublishTemplate: (id: string) => Promise<void>;
-  addUrgeRecord: (record: Omit<UrgeRecord, 'id' | 'timestamp'>) => Promise<boolean>;
+  addUrgeRecord: (record: Omit<UrgeRecord, 'id' | 'timestamp'>) => Promise<{ ok: boolean; error?: string }>;
   markAutoUrged: (key: string, dateStr: string) => void;
   clearStaleAutoUrged: (todayStr: string) => void;
   updateUrgeRecord: (id: string, updates: Partial<UrgeRecord>) => Promise<void>;
@@ -181,6 +181,24 @@ export const migratePersistedState = (persistedState: unknown, version: number) 
   if (version < 6) return undefined;
   return persistedState as WorkbenchState;
 };
+
+/**
+ * 登录身份显式落盘：zustand persist 的自动写入在部分环境下不生效（登录成功后刷新或
+ * 新开标签会恢复出上一位登录者的持久化身份，与当前 token 不一致）。此处按 persist 的
+ * 存储结构（{ state: { currentUser, searchTerm }, version: 6 }）直接覆写 currentUser，
+ * 保留其余已持久化字段。
+ */
+export function writePersistedIdentity(user: User): void {
+  try {
+    const raw = localStorage.getItem('duban-storage');
+    const parsed = raw ? JSON.parse(raw) : { state: {}, version: 6 };
+    parsed.state = { ...(parsed.state || {}), currentUser: user };
+    parsed.version = 6;
+    localStorage.setItem('duban-storage', JSON.stringify(parsed));
+  } catch {
+    // 存储不可用时跳过：merge 会按匿名处理，用户重新登录即可恢复。
+  }
+}
 
 
 const generateTimeline = (itemId: string): TimelineNode[] => [
@@ -605,6 +623,8 @@ export const useStore = create<WorkbenchState>()(
         urgeRecords: isSwitchingUser ? [] : state.urgeRecords,
       };
     });
+
+    writePersistedIdentity(user);
   },
   logout: () => {
     set({
@@ -831,10 +851,11 @@ export const useStore = create<WorkbenchState>()(
       const { api } = await import('../lib/api');
       await api.urges.create(newRecord);
       set((state) => ({ urgeRecords: [newRecord, ...state.urgeRecords] }));
-      return true;
+      return { ok: true };
     } catch (e) {
       console.error('发起催办失败:', e);
-      return false;
+      // 透传后端具体原因（如数据权限、接收人校验失败），避免页面只能展示笼统文案。
+      return { ok: false, error: (e instanceof Error && e.message) || '发起催办失败，请确认责任人后重试' };
     }
   },
   // 记录“某事项今日已自动催办/超期”，随 localStorage 持久化，刷新页面后不重复生成
@@ -1243,9 +1264,16 @@ export const useStore = create<WorkbenchState>()(
         activities: [{ id: Math.random().toString(36).slice(2, 11), content: `${state.currentUser.name} 废弃了督办事项：【${item.title}】`, timestamp: new Date().toLocaleString(), type: 'STATUS_CHANGE' } as Activity, ...state.activities]
       };
     });
-    import('../lib/api').then(({ api }) =>
-      api.items.update(id, nextApiPayload, pageAuth).catch((e) => warnAndRollbackItems(e, (items) => set({ items }), previousItems))
-    );
+    import('../lib/api').then(async ({ api }) => {
+      try {
+        await api.items.update(id, nextApiPayload, pageAuth);
+        // 服务端聚合的父/子任务状态可能与本地乐观更新存在差异，成功后全量回读权威数据，
+        // 避免按钮状态停留在过期快照上（表现为必须刷新页面才能继续操作）。
+        await get().syncItems();
+      } catch (e) {
+        warnAndRollbackItems(e, (items) => set({ items }), previousItems);
+      }
+    });
   },
   undisableItem: (id, pageAuth) => {
     const previousItems = get().items;
@@ -1266,9 +1294,14 @@ export const useStore = create<WorkbenchState>()(
         activities: [{ id: Math.random().toString(36).slice(2, 11), content: `${state.currentUser.name} 撤销废弃了督办事项：【${item.title}】`, timestamp: new Date().toLocaleString(), type: 'STATUS_CHANGE' } as Activity, ...state.activities]
       };
     });
-    import('../lib/api').then(({ api }) =>
-      api.items.update(id, nextApiPayload, pageAuth).catch((e) => warnAndRollbackItems(e, (items) => set({ items }), previousItems))
-    );
+    import('../lib/api').then(async ({ api }) => {
+      try {
+        await api.items.update(id, nextApiPayload, pageAuth);
+        await get().syncItems();
+      } catch (e) {
+        warnAndRollbackItems(e, (items) => set({ items }), previousItems);
+      }
+    });
   },
   delayItem: (id, reason, newDeadline, pageAuth) => {
     const previousItems = get().items;
@@ -1293,9 +1326,14 @@ export const useStore = create<WorkbenchState>()(
         activities: [{ id: Math.random().toString(36).slice(2, 11), content: `${state.currentUser.name} 暂缓了督办事项：【${item.title}】`, timestamp: new Date().toLocaleString(), type: 'STATUS_CHANGE' } as Activity, ...state.activities]
       };
     });
-    import('../lib/api').then(({ api }) =>
-      api.items.update(id, nextApiPayload, pageAuth).catch((e) => warnAndRollbackItems(e, (items) => set({ items }), previousItems))
-    );
+    import('../lib/api').then(async ({ api }) => {
+      try {
+        await api.items.update(id, nextApiPayload, pageAuth);
+        await get().syncItems();
+      } catch (e) {
+        warnAndRollbackItems(e, (items) => set({ items }), previousItems);
+      }
+    });
   },
   postponeItem: async (id, reason, newDeadline, pageAuth) => {
     const previousItems = get().items;
@@ -1371,9 +1409,14 @@ export const useStore = create<WorkbenchState>()(
         activities: [{ id: Math.random().toString(36).slice(2, 11), content: `${state.currentUser.name} 重启了督办事项：【${item.title}】`, timestamp: new Date().toLocaleString(), type: 'STATUS_CHANGE' } as Activity, ...state.activities]
       };
     });
-    import('../lib/api').then(({ api }) =>
-      api.items.update(id, nextApiPayload, pageAuth).catch((e) => warnAndRollbackItems(e, (items) => set({ items }), previousItems))
-    );
+    import('../lib/api').then(async ({ api }) => {
+      try {
+        await api.items.update(id, nextApiPayload, pageAuth);
+        await get().syncItems();
+      } catch (e) {
+        warnAndRollbackItems(e, (items) => set({ items }), previousItems);
+      }
+    });
   },
   disableSubTask: (id, subTaskId, reason, pageAuth) => {
     const previousItems = get().items;
@@ -1394,9 +1437,14 @@ export const useStore = create<WorkbenchState>()(
         } : i),
       };
     });
-    import('../lib/api').then(({ api }) =>
-      api.items.update(id, nextApiPayload, pageAuth).catch((e) => warnAndRollbackItems(e, (items) => set({ items }), previousItems))
-    );
+    import('../lib/api').then(async ({ api }) => {
+      try {
+        await api.items.update(id, nextApiPayload, pageAuth);
+        await get().syncItems();
+      } catch (e) {
+        warnAndRollbackItems(e, (items) => set({ items }), previousItems);
+      }
+    });
   },
   restartSubTask: (id, subTaskId, pageAuth) => {
     const previousItems = get().items;
@@ -1417,9 +1465,14 @@ export const useStore = create<WorkbenchState>()(
         } : i),
       };
     });
-    import('../lib/api').then(({ api }) =>
-      api.items.update(id, nextApiPayload, pageAuth).catch((e) => warnAndRollbackItems(e, (items) => set({ items }), previousItems))
-    );
+    import('../lib/api').then(async ({ api }) => {
+      try {
+        await api.items.update(id, nextApiPayload, pageAuth);
+        await get().syncItems();
+      } catch (e) {
+        warnAndRollbackItems(e, (items) => set({ items }), previousItems);
+      }
+    });
   },
   urgeSubTask: (itemId, itemTitle, subTask, content) => {
     import('../lib/api').then(({ api }) =>
