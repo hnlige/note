@@ -41,7 +41,7 @@ function getAuthHeaders(): Record<string, string> {
 }
 
 const IN_PROD = Boolean(import.meta.env?.PROD);
-const AUTH_ENTRY_URLS = new Set(['/auth/login', '/wecom/login']);
+const AUTH_ENTRY_URLS = new Set(['/auth/login', '/wecom/login', '/auth/logout']);
 const RENEWED_AUTH_TOKEN_HEADER = 'X-Duban-Auth-Token';
 
 /** token 失效（过期/签名不符等）：清掉死 token 并跳登录页，避免卡在"看起来已登录却做不了任何操作"的状态 */
@@ -137,6 +137,8 @@ export const api = {
         '/auth/change-password',
         { method: 'POST', body: JSON.stringify({ oldPassword, newPassword }) }
       ),
+    logout: () =>
+      request<{ success: boolean }>('/auth/logout', { method: 'POST' }),
   },
 
   // ─── Items ───

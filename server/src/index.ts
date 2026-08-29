@@ -17,12 +17,14 @@ import { asyncTasksRouter } from './routes/asyncTasks';
 import { globalRulesRouter } from './routes/globalRules';
 import { logsRouter } from './routes/logs';
 import { wecomRouter } from './routes/wecom';
+import { messagesStreamRouter } from './routes/messages.stream';
 import { reassignRouter } from './routes/reassign';
 import { attachmentsRouter } from './routes/attachments';
 import { requireAuth } from './routes/auth.middleware';
 import { getDb, closeDb } from './db';
 import { closeRedis, initializeRedis } from './redis';
 import { ensureDatabaseSchema } from './db/schema.ensure';
+import { ensureItemAccessBackfillAtStartup } from './routes/item-access';
 import { getHealthPayload } from './health';
 import { cacheMiddleware } from './cache';
 import { configureTrustedProxy } from './trust-proxy';
@@ -47,8 +49,9 @@ app.use(cors({
   exposedHeaders: ['X-Duban-Auth-Token'],
 }));
 
-// 全局请求超时（30秒，防止慢请求耗尽资源）
-app.use((_req, res, next) => {
+// 全局请求超时（30秒，防止慢请求耗尽资源）；SSE 流式响应不适用（headers 立即发送、连接长驻）
+app.use((req: import('express').Request, res, next) => {
+  if (req.path === '/api/messages/stream') return next();
   const timeout = setTimeout(() => {
     if (!res.headersSent) {
       res.status(503).json({ error: '请求超时，请稍后重试' });
@@ -79,6 +82,9 @@ app.get('/api/health', (_req, res) => res.json(getHealthPayload()));
 
 // 企业微信回调（无需认证）
 app.use('/api/wecom', wecomRouter);
+
+// 消息 SSE 推送（token 经 query 鉴权，路由内部自校验；需挂在全局超时中间件豁免之后）
+app.use('/api/messages/stream', messagesStreamRouter);
 
 // ── 业务路由 ──
 app.use('/api/auth', authRouter);
@@ -122,6 +128,11 @@ async function startServer() {
     throw new Error('REDIS_REQUIRED=true but Redis is unavailable');
   }
   await ensureDatabaseSchema(db);
+  // 部署后一次性回填 item_access（表空且 items 有数据时执行，GET_LOCK 防多实例并发）
+  const mysqlPool = (db as any)?.session?.client;
+  if (mysqlPool?.getConnection) {
+    await ensureItemAccessBackfillAtStartup(db, mysqlPool);
+  }
   const stopAutoEngine = startItemAutoEngine(db);
 
   const server = app.listen(PORT, () => {

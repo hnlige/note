@@ -12,7 +12,9 @@ export default defineConfig(({ command }) => ({
     // 不自动清空 dist/，避免本地单次删除 200+ 文件触发 WorkBuddy 安全删除守卫（阈值 50）。
     // 旧产物清理交给部署流程的 rsync --delete（服务器端执行），本地 dist 已被 gitignore，残留无害。
     emptyOutDir: false,
-    sourcemap: 'hidden',
+    // 安全：生产禁用 sourcemap。此前 'hidden' 模式仍会输出 .map 并随 dist 部署，
+    // 曾在线上可公开下载还原全部源码（nginx 侧另有 deny .map 兜底）。
+    sourcemap: false,
     rollupOptions: {
       output: {
         manualChunks: {

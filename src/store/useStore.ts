@@ -643,8 +643,15 @@ export const useStore = create<WorkbenchState>()(
       knowledge: [],
       autoUrgedKeys: {},
     });
-    try { localStorage.removeItem('duban-auth-token'); } catch {}
-    try { localStorage.removeItem('duban-storage'); } catch {}
+    // 服务端吊销会话（sessionVersion+1，全端失效）。此时 token 仍在本地，
+    // 请求可携带凭证发出；无论成败，finally 再清本地凭证完成登出。
+    void import('../lib/api')
+      .then(({ api }) => api.auth.logout())
+      .catch(() => {})
+      .finally(() => {
+        try { localStorage.removeItem('duban-auth-token'); } catch {}
+        try { localStorage.removeItem('duban-storage'); } catch {}
+      });
   },
   setItems: (items) => set({ items }),
   addItem: (item) => {

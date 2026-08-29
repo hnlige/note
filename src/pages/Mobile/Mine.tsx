@@ -57,14 +57,24 @@ export const MobileMine: React.FC = () => {
     }
   };
 
-  const handleLogout = () => {
-    setLoggingOut(true);
+  const clearLocalSession = () => {
     try {
       localStorage.removeItem(AUTH_TOKEN_KEY);
+      localStorage.removeItem('duban-storage');
     } catch {
       // storage 不可用时直接跳转即可
     }
-    window.location.replace('/m/login');
+  };
+
+  const handleLogout = () => {
+    setLoggingOut(true);
+    // 服务端吊销成功后再清本地；失败也照常登出本地会话
+    api.auth.logout()
+      .catch(() => {})
+      .finally(() => {
+        clearLocalSession();
+        window.location.replace('/m/login');
+      });
   };
 
   const openPwdModal = () => {
@@ -87,6 +97,11 @@ export const MobileMine: React.FC = () => {
       setPwdOpen(false);
       setPwdForm({ oldPwd: '', newPwd: '', confirmPwd: '' });
       showToast('密码修改成功，请使用新密码重新登录', 'success');
+      // 改密已使所有旧 token 失效，稍后主动回登录页，避免后续请求 401 被动踢出
+      setTimeout(() => {
+        clearLocalSession();
+        window.location.replace('/m/login');
+      }, 1200);
     } catch (error) {
       setPwdError(error instanceof Error ? error.message : '密码修改失败');
     } finally {

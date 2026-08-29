@@ -11,3 +11,10 @@ verification
 *.png
 *.yaml
 *.md
+# 安全：真实凭证（含 server/.env 的 COS 密钥/DATABASE_URL）绝不能进入构建上下文与镜像层
+.env
+.env.*
+**/.env
+**/.env.*
+!.env.example
+!**/.env.example

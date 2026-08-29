@@ -6,8 +6,8 @@ module.exports = {
     // ── 集群模式：根据 CPU 核心数自动分配实例，最少 2 个 ──
     instances: process.env.PM2_INSTANCES || 'max',
     exec_mode: 'cluster',
-    // 单个实例最大内存，超限自动重启
-    max_memory_restart: '500M',
+    // 单个实例最大内存，超限自动重启（500 并发压测实测峰值 ~505MB/实例，768M 留余量避免峰值期重启雪崩）
+    max_memory_restart: '768M',
     // 环境变量
     env: {
       NODE_ENV: 'production',

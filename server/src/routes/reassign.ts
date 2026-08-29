@@ -12,6 +12,7 @@ import {
   type ReassignUserLike,
 } from './reassign-core';
 import { getSignedOwnerNames } from './sign-off';
+import { rebuildItemAccessForItems } from './item-access';
 
 export const reassignRouter = Router();
 
@@ -215,6 +216,11 @@ reassignRouter.post('/', async (req: AuthenticatedRequest, res: Response) => {
         } as any).where(eq(usersTable.id, fromUser.id));
       }
     });
+
+    // 转交改变了责任人/跟进人，事务提交后重建可见性关联
+    if (itemIds.length > 0) {
+      await rebuildItemAccessForItems(db, itemIds);
+    }
 
     invalidateAccessContextCache();
 

@@ -351,12 +351,15 @@ if [ -d "$FRONTEND_SOURCE_DIR" ] && [ -n "$(ls -A "$FRONTEND_SOURCE_DIR" 2>/dev/
     mkdir -p "$FRONTEND_TARGET"
     rm -rf "$FRONTEND_TARGET"/*
     cp -r "$FRONTEND_SOURCE_DIR/"* "$FRONTEND_TARGET/"
+    # 安全兜底：即便产物源意外带出 .map（如构建配置回退），也不落到 web 根
+    find "$FRONTEND_TARGET" -name '*.map' -type f -delete 2>/dev/null || true
     log "  ✅ 前端已部署到宿主机"
 
     if command -v docker >/dev/null 2>&1 \
         && docker inspect -f '{{.State.Running}}' "$APP_CONTAINER" 2>/dev/null | grep -qx true; then
         log "  检测到前端容器 $APP_CONTAINER，正在同步容器内 /app/dist..."
         docker cp "$FRONTEND_SOURCE_DIR/." "$APP_CONTAINER:/app/dist/"
+        docker exec "$APP_CONTAINER" sh -c "find /app/dist -name '*.map' -type f -delete" 2>/dev/null || true
         docker exec "$APP_CONTAINER" nginx -t
         docker exec "$APP_CONTAINER" nginx -s reload
         log "  ✅ 容器前端已部署并刷新 Nginx"
@@ -402,6 +405,11 @@ server {
     }
 
     location ~ /\. {
+        deny all;
+    }
+
+    # 安全：禁止下载 sourcemap，防止前端源码还原
+    location ~* \.map$ {
         deny all;
     }
 }

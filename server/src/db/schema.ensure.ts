@@ -99,6 +99,14 @@ const schemaFixStatements: readonly string[] = [
   '    updated_at datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,\n' +
   '    PRIMARY KEY (message_id, user_id)\n' +
   '  )',
+  // 事项可见性关联表：行级权限的索引化形态（与 items JSON 列人员关系双写，读路径可切换走索引）
+  'CREATE TABLE IF NOT EXISTS item_access (\n' +
+  '    item_id varchar(36) NOT NULL,\n' +
+  '    user_id varchar(36) NOT NULL,\n' +
+  '    relation varchar(20) NOT NULL,\n' +
+  '    PRIMARY KEY (item_id, user_id, relation)\n' +
+  '  )',
+  'CREATE INDEX item_access_user_relation_idx ON item_access (user_id, relation, item_id)',
   'ALTER TABLE operation_logs MODIFY COLUMN timestamp datetime NOT NULL DEFAULT CURRENT_TIMESTAMP',
   'ALTER TABLE global_rules MODIFY COLUMN wecom_corp_secret varchar(512) NULL',
   // 历史数据存在 `${itemId}-${assigneeId}` 形态的复合子任务 ID（可达 74 字符），varchar(36) 会直接插入失败。

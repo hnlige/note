@@ -79,6 +79,18 @@ export const items = mysqlTable('items', {
   followerCreatedAtIdx: index('items_follower_created_at_idx').on(table.followerId, table.createdAt),
 }));
 
+// ─── 事项可见性关联表 ───
+// 行级权限的索引化形态：把 items 表 JSON 列里的人员关系拆成 (item, user, relation) 三元组，
+// 列表查询用 EXISTS 子查询走 (user_id, relation, item_id) 索引，替代 JSON_CONTAINS 全表扫描。
+export const itemAccess = mysqlTable('item_access', {
+  itemId: varchar('item_id', { length: 36 }).notNull(),
+  userId: varchar('user_id', { length: 36 }).notNull(),
+  relation: varchar('relation', { length: 20 }).notNull(),
+}, (table) => ({
+  pk: primaryKey({ columns: [table.itemId, table.userId, table.relation] }),
+  userRelationIdx: index('item_access_user_relation_idx').on(table.userId, table.relation, table.itemId),
+}));
+
 // ─── 时间轴节点 ───
 export const timelineNodes = mysqlTable('timeline_nodes', {
   id: varchar('id', { length: 36 }).primaryKey(),

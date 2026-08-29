@@ -538,6 +538,75 @@ export function buildItemAccessWhere(
   return and(accessWhere, visibilityScope) || sql`0 = 1`;
 }
 
+/**
+ * item_access 关联表版本的行级权限 WHERE（IN 半连接，驱动 item_access 索引）。
+ * 语义与 buildItemAccessWhere 逐条镜像（对账脚本保证两者可见集合一致）：
+ * 关联表由 item-access.ts 从 items 的人员列双写派生，relation ∈ OWNER|FOLLOWER|ASSIGNEE|SHARE。
+ * 实测（5000 事项/DEPT 范围）：旧 JSON 形式 ~317ms，EXISTS 关联形式 ~179ms，本 IN 形式 <1ms
+ * （执行计划为 item_access_user_relation_idx 覆盖范围扫描 + 主键回查）。
+ */
+export function buildItemAccessTableWhere(
+  input: ItemAccessInput,
+  columns: { id: any; deletedAt: any },
+  options: { includeDeleted?: boolean; onlyDeleted?: boolean } = {},
+): SQL {
+  const { currentUser, currentRole, users, departments } = input;
+  if (!currentRole) return sql`0 = 1`;
+
+  const ownerScope = currentRole.dataScope || 'SELF';
+  const followerScope = currentRole.followerDataScope;
+  const ownerSubjectIds = getOwnerScopeSubjectIds(currentUser, currentRole, users, departments);
+  const followerSubjectIds = getFollowerScopeSubjectIds(currentUser, currentRole, users, departments);
+  const directFollowerIds = users
+    .filter((user) => user.supervisorId === currentUser.id && isActiveUser(user))
+    .map((user) => user.id);
+
+  const visibilityScope = options.onlyDeleted
+    ? sql`${columns.deletedAt} IS NOT NULL`
+    : options.includeDeleted ? sql`1 = 1` : sql`${columns.deletedAt} IS NULL`;
+  // 与旧逻辑一致：任一范围为 ALL 即全量可见（旧代码两处 early return 语义合并）
+  if (ownerScope === 'ALL' || followerScope === 'ALL') {
+    return visibilityScope;
+  }
+
+  const idList = (ids: string[]) => sql.join([...new Set(ids.filter(Boolean))].map((id) => sql`${id}`), sql`, `);
+  const relationList = (relations: string[]) => sql.join(relations.map((relation) => sql`${relation}`), sql`, `);
+  const branches: SQL[] = [];
+  const addBranch = (userIds: string[], relations: string[]) => {
+    const ids = [...new Set(userIds.filter(Boolean))];
+    if (ids.length === 0 || relations.length === 0) return;
+    branches.push(sql`(_ia.user_id IN (${idList(ids)}) AND _ia.relation IN (${relationList(relations)}))`);
+  };
+
+  // 本人关系合并为一个分支：共享（仅 userId，旧 JSON_CONTAINS 同口径）+ 按角色范围的本人 OWNER/FOLLOWER
+  const selfRelations = new Set<string>(['SHARE']);
+  if (ownerScope === 'SELF') {
+    selfRelations.add('OWNER');
+    selfRelations.add('FOLLOWER');
+  } else if (ownerScope !== 'MULTI_ORG') {
+    selfRelations.add('FOLLOWER');
+  }
+  addBranch([currentUser.id], [...selfRelations]);
+  // 直属下级作为跟进人的事项
+  addBranch(directFollowerIds, ['FOLLOWER']);
+  // 部门/组织范围：责任人或子任务责任人（旧逻辑 ownerMatches + ownerSubTaskMatches）
+  if (ownerScope === 'SELF_AND_DIRECT_SUBORDINATES' || ownerScope === 'DEPT' || ownerScope === 'MULTI_ORG') {
+    addBranch(ownerSubjectIds, ['OWNER', 'ASSIGNEE']);
+  }
+  if (followerScope === 'DEPT') {
+    addBranch(followerSubjectIds, ['OWNER', 'FOLLOWER']);
+  } else if (followerScope) {
+    addBranch(followerSubjectIds, ['FOLLOWER']);
+  }
+
+  if (branches.length === 0) return and(sql`0 = 1`, visibilityScope) || sql`0 = 1`;
+  const accessCondition = or(...branches) || sql`0 = 1`;
+  return and(
+    sql`${columns.id} IN (SELECT _ia.item_id FROM item_access _ia WHERE ${accessCondition})`,
+    visibilityScope,
+  ) || sql`0 = 1`;
+}
+
 export function filterUsersByAccess<T extends AccessUserLike>(
   directoryUsers: T[],
   input: {

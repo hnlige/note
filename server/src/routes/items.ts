@@ -7,7 +7,8 @@ import { canManageItems, canUseItemAction, canUseSubTaskMutationAction, getActio
 import { computeSignOffStatus } from './sign-off';
 import { aggregateSubTaskStatus, derivePersistedItemStatus, getEffectiveItemStatus, resolveFinalApprovalStatus, shouldStartPendingItemAfterOwnerActivity } from '../lib/item-effective-status';
 import { computeWorkbenchOwnerFlags } from '../lib/workbench-flags';
-import { buildItemAccessWhere, filterItemsByAccess, type AccessItemLike } from './access.policy';
+import { buildItemAccessWhere, buildItemAccessTableWhere, filterItemsByAccess, type AccessItemLike } from './access.policy';
+import { getItemAccessQueryMode, rebuildItemAccessForItem, payloadTouchesItemRelations } from './item-access';
 import { ensureNotificationIdentityColumns } from './notification.schema';
 import { buildCreateItemMessages, buildDelayMessages, buildFeedbackMessages, buildSuspendMessages, buildShareMessages } from './item-workflow';
 import { validateCreateItemPayload } from './validation';
@@ -705,7 +706,11 @@ itemsRouter.get('/', async (req: AuthenticatedRequest, res: Response) => {
     const { page, pageSize } = getItemsPageRequest(req);
     const isRecycleBin = getDeclaredItemPageAuth(req) === 'MENU_RECYCLE_BIN';
     const includeDeleted = isRecycleBin;
-    const accessWhere = buildItemAccessWhere(accessContext, {
+    // 行级权限下推：ITEM_ACCESS_QUERY_MODE=access 走 item_access 关联表（EXISTS 索引），
+    // 默认 json 走旧 JSON_CONTAINS 路径；两者可见集合由对账脚本保证一致。
+    const accessWhere = getItemAccessQueryMode() === 'access'
+      ? buildItemAccessTableWhere(accessContext, { id: itemsTable.id, deletedAt: itemsTable.deletedAt }, { includeDeleted, onlyDeleted: isRecycleBin })
+      : buildItemAccessWhere(accessContext, {
       ownerId: itemsTable.ownerId,
       ownerIds: itemsTable.ownerIds,
       ownerName: itemsTable.ownerName,
@@ -998,6 +1003,9 @@ itemsRouter.post('/', requireItemWritePermission, async (req: AuthenticatedReque
         })) as any,
         );
       }
+
+      // 事项可见性关联双写（与事项创建同事务，保证 item_access 不滞后）
+      await rebuildItemAccessForItem(db, id, accessContext.users);
     });
 
     return res.status(201).json({
@@ -1304,10 +1312,13 @@ itemsRouter.post('/batch', requireItemWritePermission, async (req: Authenticated
                 receiverId: message.receiverId,
                 receiverName: message.receiverName,
                 senderId: message.senderId || null,
-                senderName: message.senderName || null,
+                senderName: message.senderName || '系统',
               } as any)),
             );
           }
+
+          // 事项可见性关联双写（与该行事项创建同事务）
+          await rebuildItemAccessForItem(tx, id, accessContext.users);
         });
 
         existingSerials.add(serialNo);
@@ -2161,6 +2172,12 @@ itemsRouter.put('/:id', async (req: AuthenticatedRequest & Request<{ id: string 
       .update(itemsTable)
       .set(updates as any)
       .where(eq(itemsTable.id, req.params.id));
+
+    // 人员关系字段（责任人/跟进人/子任务/共享）变更时，同事务重建可见性关联，保证 item_access 不滞后。
+    // 子任务仅状态流转的写路径不改变派生关系，跳过以降低高频反馈路径开销。
+    if (payloadTouchesItemRelations(req.body)) {
+      await rebuildItemAccessForItem(db, req.params.id, accessContext.users);
+    }
 
     return res.json({ success: true });
     });
