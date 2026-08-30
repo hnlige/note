@@ -10,6 +10,7 @@ type RateLimitOptions = {
   windowMs: number;
   namespace?: string;
   skip?: (req: Request) => boolean;
+  keyGenerator?: (req: Request) => string; // 自定义限流键生成器（支持用户级限流）
 };
 
 type LocalEntry = { count: number; resetAt: number };
@@ -57,7 +58,8 @@ export function createRateLimitMiddleware(options: RateLimitOptions) {
   return async (req: Request, res: Response, next: NextFunction) => {
     if (options.skip?.(req)) return next();
 
-    const ip = req.ip || req.socket.remoteAddress || 'unknown';
+    // 优先使用自定义 keyGenerator（支持用户级限流），回退到 IP
+    const key = options.keyGenerator?.(req) || req.ip || req.socket.remoteAddress || 'unknown';
     const now = Date.now();
     let count: number | null = null;
 
@@ -66,7 +68,7 @@ export function createRateLimitMiddleware(options: RateLimitOptions) {
       if (redis) {
         count = await consumeRedisFixedWindow(
           redis as unknown as RedisRateLimitClient,
-          buildRateLimitKey(ip, now, options.windowMs, namespace),
+          buildRateLimitKey(key, now, options.windowMs, namespace),
           options.windowMs,
         );
       }
@@ -74,7 +76,7 @@ export function createRateLimitMiddleware(options: RateLimitOptions) {
       console.error('[Redis] rate limit failed, falling back to local limiter:', error);
     }
 
-    const effectiveCount = count ?? consumeLocal(ip, now);
+    const effectiveCount = count ?? consumeLocal(key, now);
     if (effectiveCount > options.limit) {
       return res.status(429).json({ error: '请求过于频繁，请稍后重试' });
     }

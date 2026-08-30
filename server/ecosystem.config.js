@@ -13,7 +13,8 @@ module.exports = {
       NODE_ENV: 'production',
       PORT: 3001,
       RATE_LIMIT_PER_MINUTE: '1200',
-      DB_POOL_SIZE: '30',
+      DB_POOL_SIZE: '50',        // 从 30 → 50（单实例连接数）
+      DB_QUEUE_LIMIT: '100',     // 限制队列深度，防止 OOM
       // 部署指纹：由 deploy-server.sh 的 run_host_pm2 通过 shell 注入，
       // 这里显式声明后才会真正透传到 duban-server 进程环境，
       // 否则 health.runtimeId 恒为 local-runtime，导致 select_public_runtime 永远不匹配、自动角色刷新被跳过。

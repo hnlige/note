@@ -30,6 +30,7 @@ import { cacheMiddleware } from './cache';
 import { configureTrustedProxy } from './trust-proxy';
 import { startItemAutoEngine } from './jobs/item-auto-engine';
 import { createRateLimitMiddleware } from './rate-limit';
+import { queryTimeoutMiddleware } from './middleware/query-timeout';
 
 dotenv.config();
 
@@ -62,7 +63,7 @@ app.use((req: import('express').Request, res, next) => {
 });
 
 // ── 速率限制 ──
-// 全局限制：每 IP 每分钟最多 600 请求（平均 10 req/s）
+// 全局限制：优先按用户限流，回退到 IP 限流
 const M = 60 * 1000;
 const GLOBAL_RATE_LIMIT = Number(process.env.RATE_LIMIT_PER_MINUTE) || 600;
 
@@ -74,6 +75,11 @@ app.use(createRateLimitMiddleware({
   limit: GLOBAL_RATE_LIMIT,
   windowMs: M,
   skip: (req) => isDev && LOCALHOST_IPS.has(req.ip || req.socket.remoteAddress || ''),
+  // 优先使用用户 ID 限流（避免同一公司 IP 下多用户误伤），无认证时回退到 IP
+  keyGenerator: (req) => {
+    const authUser = (req as any).authUser;
+    return authUser?.id || req.ip || req.socket.remoteAddress || 'unknown';
+  },
 }));
 
 // ── 健康检查（不受限流影响） ──
@@ -97,7 +103,8 @@ app.use('/api/departments', requireAuth, cacheMiddleware('departments', cacheTtl
 app.use('/api/dictionaries', requireAuth, cacheMiddleware('dictionaries', cacheTtl), dictionariesRouter);
 
 // 高频数据路由
-app.use('/api/items', requireAuth, itemsRouter);
+// items 路由包含批量导入等慢操作，添加 15s 超时保护
+app.use('/api/items', requireAuth, queryTimeoutMiddleware(15000), itemsRouter);
 app.use('/api/attachments', requireAuth, attachmentsRouter);
 app.use('/api/messages', requireAuth, messagesRouter);
 app.use('/api/urge', requireAuth, urgeRouter);
