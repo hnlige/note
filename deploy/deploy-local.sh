@@ -7,9 +7,10 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
-SERVER_IP="49.233.13.110"
-SERVER_USER="root"
-SERVER_REPO="/root/duban"
+# 目标服务器可用环境变量覆盖（如切换阿里云新环境：SERVER_IP=<新IP> SSH_KEY=<key> bash deploy/deploy-local.sh）
+SERVER_IP="${SERVER_IP:-49.233.13.110}"
+SERVER_USER="${SERVER_USER:-root}"
+SERVER_REPO="${SERVER_REPO:-/root/duban}"
 SERVER_INBOX="${SERVER_INBOX:-/opt/duban/incoming}"
 REMOTE_TARGET="${SERVER_USER}@${SERVER_IP}"
 # Git 自动提交推送：默认开启，但只在部署与健康检查全部通过后才执行；
@@ -115,6 +116,9 @@ rsync -az -e "ssh $RSYNC_SSH_ARGS" deploy/ "${REMOTE_TARGET}:${SERVER_REPO}/depl
 # deploy-server.sh 会 cp $SERVER_REPO/server/ecosystem.config.js 到 PM2 运行时目录；
 # 该文件承载 DEPLOY_RUNTIME_ID 等进程环境声明，不同步的话服务器旧副本会让部署指纹透传失效。
 rsync -az -e "ssh $RSYNC_SSH_ARGS" server/ecosystem.config.js "${REMOTE_TARGET}:${SERVER_REPO}/server/ecosystem.config.js"
+# schema.ensure 启动时读运行时目录下的 drizzle 基线 SQL（空库建表）；
+# 只同步 dist 的话全新机器会因缺该文件崩溃循环（2026-09-04 阿里云首部署实测）。
+rsync -az -e "ssh $RSYNC_SSH_ARGS" "${PROJECT_DIR}/server/drizzle/" "${REMOTE_TARGET}:/opt/duban/server/drizzle/"
 
 # 4. 触发远端部署（deploy-server.sh 内部含 releaseId 指纹校验与公开健康等待）
 echo "[4/6] 触发远端部署..."
