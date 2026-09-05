@@ -353,6 +353,9 @@ export interface AsyncTask {
   startTime: string;
   type: 'IMPORT' | 'EXPORT';
   result?: string;
+  /** 服务端 async_tasks.module，如「组织架构」；本地构造的任务可能没有 */
+  module?: string;
+  endTime?: string;
 }
 
 export interface AuditRecord {

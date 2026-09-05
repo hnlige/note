@@ -287,6 +287,12 @@ export const globalRules = mysqlTable('global_rules', {
   wecomEncodingAesKey: varchar('wecom_encoding_aes_key', { length: 100 }),
   wecomCallbackUrl: varchar('wecom_callback_url', { length: 300 }),
   wecomTemplates: json('wecom_templates'),
+  // 通讯录同步助手的 Secret，仅用于 user/list_id 枚举成员ID（该接口只认通讯录同步 secret）
+  wecomContactSecret: varchar('wecom_contact_secret', { length: 512 }),
+  // 通讯录拉取链路：legacy = department/list + user/list；list_id = user/list_id + user/get
+  wecomSyncMode: varchar('wecom_sync_mode', { length: 20 }).default('legacy'),
+  // 移动端免登是否申请 snsapi_privateinfo 授权（弹窗同意后可回填手机号/邮箱）
+  wecomPrivateInfoEnabled: boolean('wecom_private_info_enabled').default(false),
   updatedAt: datetime('updated_at').notNull().default(sql`now()`),
 });
 

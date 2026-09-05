@@ -75,6 +75,9 @@ const schemaColumns: readonly ColumnSpec[] = [
   { tableName: 'global_rules', columnName: 'serial_rule', definition: 'text NULL' },
   { tableName: 'global_rules', columnName: 'notif_templates', definition: 'text NULL' },
   { tableName: 'global_rules', columnName: 'audit_flow', definition: 'text NULL' },
+  { tableName: 'global_rules', columnName: 'wecom_contact_secret', definition: 'varchar(512) NULL' },
+  { tableName: 'global_rules', columnName: 'wecom_sync_mode', definition: "varchar(20) NULL DEFAULT 'legacy'" },
+  { tableName: 'global_rules', columnName: 'wecom_private_info_enabled', definition: 'tinyint(1) NULL DEFAULT 0' },
 ];
 
 const schemaFixStatements: readonly string[] = [

@@ -87,3 +87,4 @@ playwright-report/
 
 # TypeScript 增量构建产物
 *.tsbuildinfo
+e2e/__screenshots__/

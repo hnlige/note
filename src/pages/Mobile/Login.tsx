@@ -107,8 +107,10 @@ export const MobileLogin: React.FC = () => {
           }
 
           // 3. 发起企业微信内置重定向授权（标记已尝试，防授权被拒后返回死循环）
+          // 开启敏感信息授权时申请 snsapi_privateinfo：成员同意弹窗后可补全手机号/邮箱
           const redirectUri = encodeURIComponent(window.location.origin + '/m/login');
-          const oauthUrl = `https://open.weixin.qq.com/connect/oauth2/authorize?appid=${encodeURIComponent(config.wecomCorpId)}&redirect_uri=${redirectUri}&response_type=code&scope=snsapi_base&agentid=${encodeURIComponent(config.wecomAgentId)}&state=wecom#wechat_redirect`;
+          const scope = config.wecomPrivateInfoEnabled ? 'snsapi_privateinfo' : 'snsapi_base';
+          const oauthUrl = `https://open.weixin.qq.com/connect/oauth2/authorize?appid=${encodeURIComponent(config.wecomCorpId)}&redirect_uri=${redirectUri}&response_type=code&scope=${scope}&agentid=${encodeURIComponent(config.wecomAgentId)}&state=wecom#wechat_redirect`;
 
           writeOauthTried();
           window.location.replace(oauthUrl);

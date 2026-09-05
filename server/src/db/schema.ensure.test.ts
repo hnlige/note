@@ -19,6 +19,9 @@ test('getDatabaseSchemaAlterStatements includes the persisted sub task column', 
   assert.ok(statements.includes("ALTER TABLE urge_records ADD COLUMN IF NOT EXISTS source varchar(20) NOT NULL DEFAULT 'MANUAL'"));
   assert.ok(statements.includes("ALTER TABLE urge_records ADD COLUMN IF NOT EXISTS result varchar(20) NOT NULL DEFAULT 'SUCCESS'"));
   assert.ok(statements.includes('ALTER TABLE global_rules ADD COLUMN IF NOT EXISTS audit_flow text NULL'));
+  assert.ok(statements.includes('ALTER TABLE global_rules ADD COLUMN IF NOT EXISTS wecom_contact_secret varchar(512) NULL'));
+  assert.ok(statements.includes("ALTER TABLE global_rules ADD COLUMN IF NOT EXISTS wecom_sync_mode varchar(20) NULL DEFAULT 'legacy'"));
+  assert.ok(statements.includes('ALTER TABLE global_rules ADD COLUMN IF NOT EXISTS wecom_private_info_enabled tinyint(1) NULL DEFAULT 0'));
 });
 
 test('getDatabaseSchemaFixStatements includes list and automatic-engine indexes', () => {

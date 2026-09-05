@@ -107,6 +107,7 @@ interface WorkbenchState {
   addRole: (role: Role) => Promise<void>;
   deleteRole: (id: string) => Promise<void>;
   addAsyncTask: (task: Omit<AsyncTask, 'id' | 'startTime' | 'progress' | 'status'>) => Promise<void>;
+  fetchAsyncTasks: () => Promise<void>;
   updateAsyncTask: (id: string, updates: Partial<AsyncTask>) => Promise<void>;
   addAuditRecord: (record: Omit<AuditRecord, 'id' | 'submitTime' | 'status'>) => Promise<void>;
   updateAuditRecord: (id: string, updates: Partial<AuditRecord>) => Promise<void>;
@@ -1031,6 +1032,19 @@ export const useStore = create<WorkbenchState>()(
       }));
     } catch (e) {
       console.warn('同步后端失败:', e);
+    }
+  },
+  fetchAsyncTasks: async () => {
+    try {
+      const { api } = await import('../lib/api');
+      const { mapServerAsyncTask, sortTasksNewestFirst } = await import('./task-sync');
+      const data = await api.asyncTasks.list();
+      if (Array.isArray(data)) {
+        set({ asyncTasks: sortTasksNewestFirst(data.map(mapServerAsyncTask)) });
+      }
+    } catch (e) {
+      // 无 MENU_TASKS 权限或后端未启动时静默降级，保留现有列表
+      console.warn('fetchAsyncTasks 失败（后端可能未启动或无任务监控权限）:', e);
     }
   },
   addAuditRecord: async (record) => {

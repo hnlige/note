@@ -345,7 +345,7 @@ export const api = {
     sync: () =>
       request<{ ok: boolean; message: string; taskId: string }>('/wecom/sync', { method: 'POST' }),
     getConfig: () =>
-      request<{ wecomCorpId: string; wecomAgentId: string }>('/wecom/config'),
+      request<{ wecomCorpId: string; wecomAgentId: string; wecomPrivateInfoEnabled: boolean }>('/wecom/config'),
   },
 
   // ─── 员工督办转交（仅超级管理员）───

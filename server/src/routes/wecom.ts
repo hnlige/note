@@ -4,7 +4,7 @@ import { createAuthToken } from './auth.session';
 import { requireAuth, AuthenticatedRequest } from './auth.middleware';
 import { requireModuleAccess } from './module-authz.middleware';
 import { canManageGlobalRules } from './module-authz';
-import { getWecomUserIdByCode, syncContacts } from '../services/wecom';
+import { getWecomUserIdByCode, getWecomSensitiveDetailByTicket, syncContacts, normalizeWecomSyncMode } from '../services/wecom';
 import { v4 as uuidv4 } from 'uuid';
 import { resolveDisplayRoleName } from './role-identity';
 
@@ -34,7 +34,7 @@ wecomRouter.post('/login', async (req: Request, res: Response) => {
   }
 
   try {
-    const wecomUserId = await getWecomUserIdByCode(code);
+    const { userid: wecomUserId, userTicket } = await getWecomUserIdByCode(code);
 
     const db = await getDb();
     const { users: usersTable, roles: rolesTable } = await import('../db/schema');
@@ -67,6 +67,22 @@ wecomRouter.post('/login', async (req: Request, res: Response) => {
       await db.update(usersTable)
         .set({ wecomUserId } as any)
         .where(eq(usersTable.id, user.id));
+    }
+
+    // snsapi_privateinfo 授权（移动端免登配置了敏感信息授权时）会返回 user_ticket：
+    // 据此补全本地缺失的手机号/邮箱。仅填充空缺、不覆盖已有资料；失败不影响登录。
+    if (userTicket) {
+      try {
+        const detail = await getWecomSensitiveDetailByTicket(userTicket);
+        const patch: Record<string, unknown> = {};
+        if (detail.mobile && !user.phone) patch.phone = detail.mobile;
+        if (detail.email && !user.email) patch.email = detail.email;
+        if (Object.keys(patch).length > 0) {
+          await db.update(usersTable).set(patch as any).where(eq(usersTable.id, user.id));
+        }
+      } catch (error: any) {
+        console.warn('获取企业微信敏感信息失败（不影响登录）:', error?.message || error);
+      }
     }
 
     const roleIds = parseStringArray(user.roleIds).length > 0
@@ -111,14 +127,23 @@ wecomRouter.post('/login', async (req: Request, res: Response) => {
 wecomRouter.post('/sync', requireAuth, requireWecomManage, async (req: AuthenticatedRequest, res: Response) => {
   try {
     const db = await getDb();
-    const { asyncTasks: taskTable } = await import('../db/schema');
+    const { asyncTasks: taskTable, globalRules: rulesTable } = await import('../db/schema');
     const { eq } = await import('drizzle-orm');
-    
+
+    // 同步链路由全局配置决定：legacy（department/list + user/list）/ list_id（user/list_id + user/get）
+    const [config] = await db.select().from(rulesTable).limit(1);
+    const mode = normalizeWecomSyncMode(config?.wecomSyncMode);
+    if (mode === 'list_id' && !config?.wecomContactSecret) {
+      return res.status(400).json({
+        error: '同步模式已切换为「成员ID列表（官方推荐）」，但尚未配置「通讯录同步」Secret。请到 系统设置 → 企业微信配置 填写后再同步'
+      });
+    }
+
     // 建立异步任务记录以便于后台监控
     const taskId = uuidv4();
     await db.insert(taskTable).values({
       id: taskId,
-      name: '企业微信通讯录同步',
+      name: `企业微信通讯录同步（${mode === 'list_id' ? '成员ID列表链路' : '兼容链路'}）`,
       module: '组织架构',
       status: 'PROCESSING',
       progress: 10,
@@ -126,7 +151,7 @@ wecomRouter.post('/sync', requireAuth, requireWecomManage, async (req: Authentic
     } as any);
 
     // 异步执行，不阻塞 HTTP 响应 (企业微信要求同步动作秒级返回)
-    syncContacts()
+    syncContacts(mode)
       .then(async (result) => {
         const upDb = await getDb();
         const { asyncTasks: uTaskTable } = await import('../db/schema');
@@ -134,8 +159,9 @@ wecomRouter.post('/sync', requireAuth, requireWecomManage, async (req: Authentic
           .set({
             status: 'COMPLETED',
             progress: 100,
-            result: `同步成功：共导入/更新 ${result.deptCount} 个部门，${result.userCount} 位成员`
+            result: `同步成功（${result.mode === 'list_id' ? '成员ID列表链路' : '兼容链路'}）：共导入/更新 ${result.deptCount} 个部门，${result.userCount} 位成员`
               + (result.linkedByJobNumber ? `，按工号关联存量账号 ${result.linkedByJobNumber} 个` : '')
+              + (result.linkedByUsername ? `，按账号名关联存量账号 ${result.linkedByUsername} 个` : '')
               + '。',
             endTime: new Date()
           } as any)
@@ -157,7 +183,9 @@ wecomRouter.post('/sync', requireAuth, requireWecomManage, async (req: Authentic
 
     return res.json({
       ok: true,
-      message: '企业微信通讯录同步任务已提交，系统正在后台异步拉取，请在后台任务监控查看详情',
+      message: mode === 'list_id'
+        ? '企业微信通讯录同步任务已提交（成员ID列表链路），系统正在后台拉取，请在后台任务监控查看详情'
+        : '企业微信通讯录同步任务已提交，系统正在后台异步拉取，请在后台任务监控查看详情',
       taskId
     });
   } catch (error: any) {
@@ -174,7 +202,9 @@ wecomRouter.get('/config', async (_req, res) => {
     const [config] = await db.select().from(rulesTable).limit(1);
     return res.json({
       wecomCorpId: config?.wecomCorpId || '',
-      wecomAgentId: config?.wecomAgentId || ''
+      wecomAgentId: config?.wecomAgentId || '',
+      // 移动端免登据此决定 oauth2 scope：true 时申请 snsapi_privateinfo（弹窗授权后可补全手机号/邮箱）
+      wecomPrivateInfoEnabled: Boolean(config?.wecomPrivateInfoEnabled)
     });
   } catch (error) {
     console.error('Get wecom public config error:', error);
