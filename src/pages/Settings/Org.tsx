@@ -29,6 +29,7 @@ import {
 import { DeptNode } from '../../types';
 import { Drawer } from '../../components/Common/Drawer';
 import { downloadCsv } from '../../lib/export-csv';
+import { getRolesByUser } from '../../store/role-access';
 
 // 可搜索下拉框组件
 const SearchableSelect: React.FC<{
@@ -129,7 +130,17 @@ const OrgManagement: React.FC = () => {
   const [isBatchImportOpen, setIsBatchImportOpen] = useState(false);
   const [batchImportText, setBatchImportText] = useState('');
   const [searchKeyword, setSearchKeyword] = useState('');
-  const canManageMembers = hasAuthToken();
+  // 与后端 canManageUsers 口径一致：需 MENU_ORG/MENU_SYSTEM 菜单权限，且具备 EDIT_SYSTEM 动作。
+  // 此前仅判断登录态，导致无权限角色看到可用按钮、提交被 403 拒绝却提示成功。
+  const canManageMembers = useMemo(() => {
+    if (!hasAuthToken()) return false;
+    return getRolesByUser(currentUser, roles).some((role) => {
+      const authCodes = role.authCodes || [];
+      if (!authCodes.includes('ALL') && !authCodes.includes('MENU_ORG') && !authCodes.includes('MENU_SYSTEM')) return false;
+      if (authCodes.includes('ALL')) return true;
+      return (role.allowedActions || []).includes('EDIT_SYSTEM');
+    });
+  }, [currentUser, roles]);
   const handleSyncContacts = async () => {
     await addAsyncTask({
       name: '企业微信通讯录全量同步',
@@ -224,7 +235,7 @@ const OrgManagement: React.FC = () => {
     if (currentPage !== pagination.currentPage) setCurrentPage(pagination.currentPage);
   }, [currentPage, pagination.currentPage]);
 
-  const handleBatchImport = () => {
+  const handleBatchImport = async () => {
     if (!batchImportText.trim()) {
       showToast('请先输入成员数据', 'warning');
       return;
@@ -249,7 +260,12 @@ const OrgManagement: React.FC = () => {
       showToast('没有有效的成员数据', 'warning');
       return;
     }
-    batchAddOrgUsers(selectedDeptId, users);
+    try {
+      await batchAddOrgUsers(selectedDeptId, users);
+    } catch (e: any) {
+      showToast(`批量导入失败：${e?.message || '请稍后重试'}`, 'error');
+      return;
+    }
     addLog({
       userName: currentUser.name,
       userId: currentUser.id,
@@ -302,7 +318,7 @@ const OrgManagement: React.FC = () => {
     }
   };
 
-  const handleAddUser = () => {
+  const handleAddUser = async () => {
     if (!newUser.name.trim()) return;
     if (!newUser.username.trim()) {
       showToast('请填写登录账号', 'warning');
@@ -312,11 +328,18 @@ const OrgManagement: React.FC = () => {
       showToast('请选择系统角色', 'warning');
       return;
     }
-    addOrgUser(selectedDeptId, newUser);
+    const memberName = newUser.name;
+    try {
+      await addOrgUser(selectedDeptId, newUser);
+    } catch (e: any) {
+      showToast(`添加成员失败：${e?.message || '请稍后重试'}`, 'error');
+      return;
+    }
+    showToast(`已添加成员 ${memberName}`, 'success');
     addLog({
       userName: currentUser.name,
       userId: currentUser.id,
-      action: `添加成员: ${newUser.name}`,
+      action: `添加成员: ${memberName}`,
       module: '组织架构'
     });
     setNewUser({ name: '', username: '', roleId: '', role: '普通员工', email: '', phone: '', supervisorId: '' });
@@ -377,25 +400,31 @@ const OrgManagement: React.FC = () => {
     setIsEditUserDrawerOpen(true);
   };
 
-  const handleSaveEditUser = () => {
+  const handleSaveEditUser = async () => {
     if (!editingUser || !editingUser.name.trim()) return;
-    updateOrgUser(editingUser.id, {
-      name: editingUser.name,
-      username: editingUser.username,
-      deptId: editingUser.deptId,
-      roleId: editingUser.roleId,
-      roleIds: editingUser.roleIds.length > 0 ? editingUser.roleIds : undefined,
-      role: editingUser.role,
-      email: editingUser.email,
-      phone: editingUser.phone,
-      supervisorId: editingUser.supervisorId || undefined,
-      adminOrgIds: editingUser.adminOrgIds.length > 0 ? editingUser.adminOrgIds : [],
-    } as any);
-    showToast(`成员 ${editingUser.name} 信息已更新`, 'success');
+    const memberName = editingUser.name;
+    try {
+      await updateOrgUser(editingUser.id, {
+        name: editingUser.name,
+        username: editingUser.username,
+        deptId: editingUser.deptId,
+        roleId: editingUser.roleId,
+        roleIds: editingUser.roleIds.length > 0 ? editingUser.roleIds : undefined,
+        role: editingUser.role,
+        email: editingUser.email,
+        phone: editingUser.phone,
+        supervisorId: editingUser.supervisorId || undefined,
+        adminOrgIds: editingUser.adminOrgIds.length > 0 ? editingUser.adminOrgIds : [],
+      } as any);
+    } catch (e: any) {
+      showToast(`成员 ${memberName} 信息保存失败：${e?.message || '请稍后重试'}`, 'error');
+      return;
+    }
+    showToast(`成员 ${memberName} 信息已更新`, 'success');
     addLog({
       userName: currentUser.name,
       userId: currentUser.id,
-      action: `编辑成员: ${editingUser.name}`,
+      action: `编辑成员: ${memberName}`,
       module: '组织架构'
     });
     setIsEditUserDrawerOpen(false);
@@ -639,7 +668,9 @@ const OrgManagement: React.FC = () => {
           </div>
           {!canManageMembers && (
             <div className="mx-6 mt-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-700">
-              当前处于离线登录状态，仅可查看成员信息，新增、编辑、删除、导入等操作已禁用。请重新登录后再执行成员管理操作。
+              {!hasAuthToken()
+                ? '当前处于离线登录状态，仅可查看成员信息，新增、编辑、删除、导入等操作已禁用。请重新登录后再执行成员管理操作。'
+                : '当前账号无成员管理权限（需具备组织/系统菜单权限及「编辑系统配置」动作），仅可查看成员信息。如需管理成员，请联系管理员调整角色权限。'}
             </div>
           )}
 
