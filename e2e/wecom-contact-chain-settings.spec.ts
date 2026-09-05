@@ -5,11 +5,14 @@ import { loginViaUi } from './helpers';
 // 设置页新增 通讯录同步Secret / 同步链路 / 免登敏感信息授权 三项配置，可保存并正确回显。
 test('wecom settings exposes contact chain config fields', async ({ page }) => {
   await loginViaUi(page, 'admin', '00000210');
+  // 先注册响应等待再导航；dev 环境 StrictMode 会让加载 effect 跑两次（两次 GET），
+  // 必须等网络空闲确保全部初始请求落地，否则迟到的 GET 会把已填字段覆盖回库内旧值。
+  const configLoaded = page.waitForResponse(/\/api\/global-rules/);
   await page.goto('/settings/wecom');
+  await configLoaded;
+  await page.waitForLoadState('networkidle');
 
   await expect(page.getByRole('heading', { name: '企业微信配置' })).toBeVisible();
-  // 等初始配置加载完成再交互：异步 GET 迟到会把已填字段覆盖回库内旧值（页面既有加载模式）
-  await page.waitForResponse(/\/api\/global-rules$/);
 
   // 新增控件渲染
   const contactSecretInput = page.getByPlaceholder('企业微信管理后台 → 管理工具 → 通讯录同步 的 Secret');
@@ -26,8 +29,9 @@ test('wecom settings exposes contact chain config fields', async ({ page }) => {
   await page.getByRole('button', { name: '保存配置' }).click();
   await expect(page.getByText('企业微信配置已保存')).toBeVisible({ timeout: 10000 });
 
-  // 刷新后回显：链路为官方推荐、开关开启、Secret 脱敏
+  // 刷新后回显：链路为官方推荐、开关开启、Secret 脱敏（同样等全部加载请求落地再断言）
   await page.reload();
+  await page.waitForLoadState('networkidle');
   await expect(page.getByRole('heading', { name: '企业微信配置' })).toBeVisible();
   await expect(page.locator('select').first()).toHaveValue('list_id');
   await expect(page.locator('input[type="checkbox"]').first()).toBeChecked();

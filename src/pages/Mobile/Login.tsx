@@ -35,6 +35,11 @@ const clearOauthTried = (): void => {
   }
 };
 
+// 免登 code 是一次性的：消费后（无论成败）不得再次提交。
+// 企微 webview 重进应用会恢复带 ?code= 的历史 URL、刷新页面也会重放同一 code，
+// 后端再次兑换必得 40029（invalid code）。已消费 code 在本页生命周期内直接回落账号密码。
+const consumedOauthCodes = new Set<string>();
+
 export const MobileLogin: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -121,7 +126,17 @@ export const MobileLogin: React.FC = () => {
         return;
       }
 
-      // 4. 有 code 时，调用后端完成免登及身份匹配
+      // 4. 有 code 时，调用后端完成免登及身份匹配。
+      // 先标记本会话已尝试授权，再把一次性 code 从地址栏移除并做已消费去重：
+      // 防止组件重挂载/webview 恢复历史 URL/刷新时，二次进入无 code 分支又发起 OAuth 跳转或重放已消费 code（40029）。
+      writeOauthTried();
+      window.history.replaceState({}, '', '/m/login');
+      if (consumedOauthCodes.has(code)) {
+        fallbackToPasswordForm('免登授权码已使用，请从企业微信工作台重新进入应用，或使用账号密码登录。');
+        return;
+      }
+      consumedOauthCodes.add(code);
+
       try {
         const user = await api.wecom.login(code);
 

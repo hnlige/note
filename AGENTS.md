@@ -84,10 +84,10 @@
 - **发布铁律（P0）**：任何改动都必须先在本地环境（`pnpm dev` + `cd server && npm run dev` 或本地部署）完成验证并明确通过，才能执行 `deploy/deploy-local.sh` 发布线上。本地未验证 / 验证不通过 / 只跑了静态检查（`check`/`lint`/`build`）时，**禁止发布线上**。
 - 本地验证的最低标准：涉及路由或数据库改动要用 `curl` 打本地 `http://localhost:3001/` 接口拿到预期响应；涉及 UI 改动要在浏览器 `http://localhost:5173/` 走一次真实用户操作；仅 helper/纯函数改动可用聚焦测试代替。
 - 发布顺序固定为：`本地代码修改 → 本地服务重启/热更 → 本地功能验证通过 → 用户确认或明确要求发布 → deploy-local.sh → 线上健康检查与业务点回归 → Git 自动提交推送（脚本自动完成）`。任何一步跳过都要显式告知用户并等待确认。
-- 当前维护的线上目标由 `deploy/deploy-local.sh` 管理，服务器为 `root@49.233.13.110`，远端目录 `/root/duban`。
-- 常规本地发布命令在项目根目录运行：`SSH_KEY=<key-path> bash deploy/deploy-local.sh`；如已有 SSH 默认身份可省略 `SSH_KEY`。
-- `deploy-local.sh` 会构建前端、构建后端、同步 `dist/`、`server/dist/` 和 `deploy/`，再远程执行 `SKIP_GIT_SYNC=1 bash /root/duban/deploy/deploy-server.sh`。
-- 发布后至少验证 `http://49.233.13.110/` 和 `http://49.233.13.110/api/health`，并记录 `releaseId` 是否为本次发布；关键业务点（登录、菜单、目标页操作）要跟着回归一次。
+- 当前线上生产为阿里云 `root@8.163.59.192`（2026-09-04 由腾讯云 49.233.13.110 迁移切换；旧机 PM2 已停、仅保留作回滚，sshd 仍在并兼作 SSH 跳板）。线上实际运行目录是 `/opt/duban`（后端、PM2 cwd）与 `/var/www/duban/dist`（前端），排查线上问题以 `/opt/duban` 为准；远端 `/root/duban/deploy/` 只是部署脚本的同步位置。
+- 常规本地发布命令在项目根目录运行：`SERVER_IP=8.163.59.192 SSH_KEY=~/Downloads/duban.pem bash deploy/deploy-local.sh`；本机 `~/.ssh/config` 已配置该 Host（duban.pem + ProxyJump 经旧生产跳板）时可省略 `SSH_KEY`。注意 `deploy-local.sh` 内置默认值仍指向旧生产 49.233.13.110，发布新机必须显式带 `SERVER_IP`。
+- `deploy-local.sh` 会构建前端、构建后端、同步 `dist/`、`server/dist/`、`deploy/`、`server/ecosystem.config.js` 和 `server/drizzle/`，再远程执行 `SKIP_GIT_SYNC=1 bash /root/duban/deploy/deploy-server.sh`。
+- 发布后至少验证 `http://8.163.59.192/` 和 `http://8.163.59.192/api/health`（域名 `db.boaoyiling.com` 已解析到该机），并记录 `releaseId` 是否为本次发布；关键业务点（登录、菜单、目标页操作）要跟着回归一次。
 - `deploy-local.sh` 在本地构建、远端部署、线上公开健康检查全部通过后，自动提交并推送**当前分支**到 origin（默认开启；设 `PUSH_TO_GIT=0` 显式关闭）。防误提交机制：新增文件命中黑名单（PEM/key/.env/tmp-/tsbuildinfo/测试产物等）时撤销暂存并转人工；推送失败（代理/网络）只降级为本地提交加提示，不影响已完成的部署。
 - 不要泄露 PEM、token、数据库密码、`DATABASE_URL`、认证密钥或线上环境文件内容。
 
