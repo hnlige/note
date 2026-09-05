@@ -1,7 +1,7 @@
 import { getDb } from '../db';
 import { hashPassword } from '../routes/auth.password';
 import { v4 as uuidv4 } from 'uuid';
-import { normalizePhone, resolveSyncTarget } from './wecom.sync-target';
+import { resolveSyncTarget } from './wecom.sync-target';
 
 let cachedAccessToken: string | null = null;
 let tokenExpiresAt = 0;
@@ -51,7 +51,7 @@ export async function getWecomUserIdByCode(code: string): Promise<string> {
   return data.userid || data.UserId;
 }
 
-export async function syncContacts(): Promise<{ deptCount: number; userCount: number; linkedByPhone: number; phoneConflicts: number }> {
+export async function syncContacts(): Promise<{ deptCount: number; userCount: number; linkedByJobNumber: number }> {
   const token = await getAccessToken();
   const db = await getDb();
   const { eq } = await import('drizzle-orm');
@@ -144,39 +144,29 @@ export async function syncContacts(): Promise<{ deptCount: number; userCount: nu
 
   const wecomUsers = userData.userlist || [];
 
-  // 获取数据库现有用户：按 wecom_user_id 与手机号（仅未关联账号）建立索引
+  // 获取数据库现有用户：按 wecom_user_id 与登录账号（仅未关联账号，用于工号匹配）建立索引
   const localUsers = await db.select().from(usersTable);
   const userMap = new Map<string, any>();
-  const phoneMap = new Map<string, any[]>();
+  const usernameMap = new Map<string, any>();
   for (const u of localUsers) {
     const uWecomId = (u as any).wecomUserId;
     if (uWecomId) {
       userMap.set(uWecomId, u);
       continue;
     }
-    const uPhone = normalizePhone((u as any).phone);
-    if (uPhone) {
-      const hits = phoneMap.get(uPhone);
-      if (hits) hits.push(u); else phoneMap.set(uPhone, [u]);
-    }
+    const uUsername = typeof (u as any).username === 'string' ? (u as any).username.trim() : '';
+    if (uUsername) usernameMap.set(uUsername, u);
   }
 
-  let linkedByPhone = 0;
-  let phoneConflicts = 0;
+  let linkedByJobNumber = 0;
   for (const wu of wecomUsers) {
     const wecomUserId = wu.userid;
-    const decision = resolveSyncTarget(wu, userMap, phoneMap);
+    const decision = resolveSyncTarget(wu, userMap, usernameMap);
 
     // 解析用户的本地部门 ID（取其企业微信关联的首个部门进行映射）
     let localDeptId: string | null = null;
     if (wu.department && wu.department.length > 0) {
       localDeptId = wecomToLocalIdMap.get(String(wu.department[0])) || null;
-    }
-
-    if (decision.via === 'phone_conflict') {
-      // 手机号指向多个本地账号：宁可不建号也不绑错，由管理员人工处理
-      phoneConflicts += 1;
-      continue;
     }
 
     if (decision.via === 'wecom_id') {
@@ -193,14 +183,14 @@ export async function syncContacts(): Promise<{ deptCount: number; userCount: nu
       continue;
     }
 
-    if (decision.via === 'phone') {
-      // 手机号唯一命中未关联存量账号：仅回填 wecom_user_id 建立关联，不改动既有资料
+    if (decision.via === 'job_number') {
+      // 工号唯一命中未关联存量账号：仅回填 wecom_user_id 建立关联，不改动既有资料
       await db.update(usersTable)
         .set({ wecomUserId } as any)
         .where(eq(usersTable.id, decision.targetId!));
-      linkedByPhone += 1;
-      // 该手机号已被占用，防止后续同号成员重复绑到同一账号
-      phoneMap.delete(normalizePhone(wu.mobile));
+      linkedByJobNumber += 1;
+      // 该登录账号已被占用，防止其他同工号成员重复绑到同一账号
+      usernameMap.delete(String(wu.job_number ?? '').trim());
       continue;
     }
 
@@ -226,8 +216,7 @@ export async function syncContacts(): Promise<{ deptCount: number; userCount: nu
   return {
     deptCount: wecomDepts.length,
     userCount: wecomUsers.length,
-    linkedByPhone,
-    phoneConflicts
+    linkedByJobNumber
   };
 }
 

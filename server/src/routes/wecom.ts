@@ -135,8 +135,7 @@ wecomRouter.post('/sync', requireAuth, requireWecomManage, async (req: Authentic
             status: 'COMPLETED',
             progress: 100,
             result: `同步成功：共导入/更新 ${result.deptCount} 个部门，${result.userCount} 位成员`
-              + (result.linkedByPhone ? `，按手机号关联存量账号 ${result.linkedByPhone} 个` : '')
-              + (result.phoneConflicts ? `；${result.phoneConflicts} 个手机号对应多个本地账号已跳过，请人工核实` : '')
+              + (result.linkedByJobNumber ? `，按工号关联存量账号 ${result.linkedByJobNumber} 个` : '')
               + '。',
             endTime: new Date()
           } as any)

@@ -1,63 +1,58 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { normalizePhone, resolveSyncTarget } from './wecom.sync-target.js';
+import { resolveSyncTarget } from './wecom.sync-target.js';
 
-test('normalizePhone strips non-digits and mainland country code 86', () => {
-  assert.equal(normalizePhone('13800138000'), '13800138000');
-  assert.equal(normalizePhone('+86 138-0013-8000'), '13800138000');
-  assert.equal(normalizePhone('8613800138000'), '13800138000');
-  assert.equal(normalizePhone(' 13800138000 '), '13800138000');
-  assert.equal(normalizePhone(13800138000), '13800138000');
-  assert.equal(normalizePhone(null), '');
-  assert.equal(normalizePhone(undefined), '');
-  assert.equal(normalizePhone(''), '');
-  // 非手机号格式（如带 86 的短号/座机）不做 86 裁剪，仅去非数字
-  assert.equal(normalizePhone('0571-88888888'), '057188888888');
-});
+test('resolveSyncTarget prefers exact wecom_user_id match over job_number', () => {
+  const byWecomId = new Map([['zhangsan', { id: 'u1', username: '00010050', wecomUserId: 'zhangsan' }]]);
+  const byUsername = new Map([['00020060', { id: 'u2', username: '00020060' }]]);
 
-test('resolveSyncTarget prefers exact wecom_user_id match over phone', () => {
-  const byWecomId = new Map([['zhangsan', { id: 'u1', wecomUserId: 'zhangsan', phone: '13800138000' }]]);
-  const byPhone = new Map([['13900139000', [{ id: 'u2', phone: '13900139000' }]]]);
-
-  const decision = resolveSyncTarget({ userid: 'zhangsan', mobile: '13900139000' }, byWecomId, byPhone);
+  const decision = resolveSyncTarget(
+    { userid: 'zhangsan', job_number: '00020060' },
+    byWecomId,
+    byUsername,
+  );
   assert.deepEqual(decision, { targetId: 'u1', via: 'wecom_id' });
 });
 
-test('resolveSyncTarget links by unique phone hit', () => {
+test('resolveSyncTarget links when job_number uniquely hits an unlinked login account', () => {
   const byWecomId = new Map();
-  const byPhone = new Map([['13800138000', [{ id: 'u1', phone: '13800138000' }]]]);
+  const byUsername = new Map([['00010050', { id: 'u1', username: '00010050' }]]);
 
-  const decision = resolveSyncTarget({ userid: 'newbie', mobile: '13800138000' }, byWecomId, byPhone);
-  assert.deepEqual(decision, { targetId: 'u1', via: 'phone' });
+  const decision = resolveSyncTarget({ userid: 'huangzhihao', job_number: '00010050' }, byWecomId, byUsername);
+  assert.deepEqual(decision, { targetId: 'u1', via: 'job_number' });
 });
 
-test('resolveSyncTarget normalizes +86 mobile from wecom before matching', () => {
+test('resolveSyncTarget trims whitespace around job_number and usernames', () => {
   const byWecomId = new Map();
-  const byPhone = new Map([['13800138000', [{ id: 'u1', phone: '13800138000' }]]]);
+  const byUsername = new Map([['00010050', { id: 'u1', username: '00010050' }]]);
 
-  const decision = resolveSyncTarget({ userid: 'newbie', mobile: '+8613800138000' }, byWecomId, byPhone);
-  assert.deepEqual(decision, { targetId: 'u1', via: 'phone' });
+  const decision = resolveSyncTarget({ userid: 'huangzhihao', job_number: ' 00010050 ' }, byWecomId, byUsername);
+  assert.deepEqual(decision, { targetId: 'u1', via: 'job_number' });
 });
 
-test('resolveSyncTarget skips when phone hits multiple local accounts', () => {
-  const byWecomId = new Map();
-  const byPhone = new Map([['13800138000', [
-    { id: 'u1', phone: '13800138000' },
-    { id: 'u2', phone: '138-0013-8000' },
-  ]]]);
-
-  const decision = resolveSyncTarget({ userid: 'newbie', mobile: '13800138000' }, byWecomId, byPhone);
-  assert.deepEqual(decision, { targetId: null, via: 'phone_conflict' });
-});
-
-test('resolveSyncTarget falls back to create when nothing matches', () => {
-  const decision = resolveSyncTarget({ userid: 'newbie', mobile: '13700137000' }, new Map(), new Map());
+test('resolveSyncTarget creates when job_number matches no login account', () => {
+  const byUsername = new Map([['00010050', { id: 'u1', username: '00010050' }]]);
+  const decision = resolveSyncTarget({ userid: 'newbie', job_number: '99999999' }, new Map(), byUsername);
   assert.deepEqual(decision, { targetId: null, via: 'create' });
 });
 
-test('resolveSyncTarget creates when member has no mobile at all', () => {
-  const byPhone = new Map([['13800138000', [{ id: 'u1', phone: '13800138000' }]]]);
-  const decision = resolveSyncTarget({ userid: 'newbie' }, new Map(), byPhone);
+test('resolveSyncTarget creates when member has no job_number at all', () => {
+  const byUsername = new Map([['00010050', { id: 'u1', username: '00010050' }]]);
+  const decision = resolveSyncTarget({ userid: 'newbie' }, new Map(), byUsername);
+  assert.deepEqual(decision, { targetId: null, via: 'create' });
+});
+
+test('resolveSyncTarget treats empty-string job_number as absent', () => {
+  const byUsername = new Map([['00010050', { id: 'u1', username: '00010050' }]]);
+  const decision = resolveSyncTarget({ userid: 'newbie', job_number: '   ' }, new Map(), byUsername);
+  assert.deepEqual(decision, { targetId: null, via: 'create' });
+});
+
+test('resolveSyncTarget creates for accounts that are already linked (absent from username index)', () => {
+  // 已绑定账号不在 byUsername 索引中（调用方构建索引时排除），因此不会被其他成员再次绑定
+  const byWecomId = new Map([['zhangsan', { id: 'u1', username: '00010050', wecomUserId: 'zhangsan' }]]);
+  const byUsername = new Map();
+  const decision = resolveSyncTarget({ userid: 'someone-else', job_number: '00010050' }, byWecomId, byUsername);
   assert.deepEqual(decision, { targetId: null, via: 'create' });
 });
