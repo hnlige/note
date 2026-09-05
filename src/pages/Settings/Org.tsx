@@ -142,12 +142,14 @@ const OrgManagement: React.FC = () => {
     });
   }, [currentUser, roles]);
   const handleSyncContacts = async () => {
-    await addAsyncTask({
-      name: '企业微信通讯录全量同步',
-      type: 'IMPORT',
-    });
-    addLog({ userName: currentUser.name, userId: currentUser.id, action: '发起企业微信通讯录全量同步', module: '组织架构' });
-    showToast('通讯录全量同步任务已提交，请前往任务监控查看进度', 'info');
+    // 此前仅写入本地任务记录、从未调用真实同步接口；现在接通 POST /api/wecom/sync
+    try {
+      const res = await api.wecom.sync();
+      addLog({ userName: currentUser.name, userId: currentUser.id, action: '发起企业微信通讯录全量同步', module: '组织架构' });
+      showToast(res.message || '通讯录全量同步任务已提交，请前往任务监控查看进度', 'info');
+    } catch (e: any) {
+      showToast(`发起通讯录同步失败：${e?.message || '请稍后重试'}`, 'error');
+    }
   };
 
   const handleExportOrg = () => {
