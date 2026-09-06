@@ -11,6 +11,7 @@ import {
   X
 } from 'lucide-react';
 import { useStore } from '../../store/useStore';
+import { downloadCsv } from '../../lib/export-csv';
 import { useNavigate } from 'react-router-dom';
 
 interface TaskCenterProps {
@@ -32,16 +33,17 @@ export const TaskCenter: React.FC<TaskCenterProps> = ({ isOpen, onClose }) => {
   };
 
   const handleDownload = (taskName: string) => {
-    const csvContent = `任务名称,${taskName}\n生成时间,${new Date().toLocaleString()}\n状态,已完成\n---\n明细数据,请从导出服务获取完整文件`;
-    const blob = new Blob(['\uFEFF' + csvContent], { type: 'text/csv;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `${taskName}_${new Date().toISOString().slice(0, 10)}.csv`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+    // 任务名来自用户输入，统一走 downloadCsv 的公式中和与引号转义，防止 CSV 公式注入
+    downloadCsv(
+      `${taskName}_${new Date().toISOString().slice(0, 10)}.csv`,
+      ['任务名称', taskName],
+      [
+        ['生成时间', new Date().toLocaleString()],
+        ['状态', '已完成'],
+        ['---'],
+        ['明细数据', '请从导出服务获取完整文件'],
+      ],
+    );
   };
 
   const handleClear = (taskId: string) => {

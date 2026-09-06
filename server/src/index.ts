@@ -17,14 +17,20 @@ import { asyncTasksRouter } from './routes/asyncTasks';
 import { globalRulesRouter } from './routes/globalRules';
 import { logsRouter } from './routes/logs';
 import { wecomRouter } from './routes/wecom';
+import { messagesStreamRouter } from './routes/messages.stream';
 import { reassignRouter } from './routes/reassign';
+import { attachmentsRouter } from './routes/attachments';
 import { requireAuth } from './routes/auth.middleware';
 import { getDb, closeDb } from './db';
+import { closeRedis, initializeRedis } from './redis';
 import { ensureDatabaseSchema } from './db/schema.ensure';
+import { ensureItemAccessBackfillAtStartup } from './routes/item-access';
 import { getHealthPayload } from './health';
 import { cacheMiddleware } from './cache';
 import { configureTrustedProxy } from './trust-proxy';
 import { startItemAutoEngine } from './jobs/item-auto-engine';
+import { createRateLimitMiddleware } from './rate-limit';
+import { queryTimeoutMiddleware } from './middleware/query-timeout';
 
 dotenv.config();
 
@@ -44,58 +50,40 @@ app.use(cors({
   exposedHeaders: ['X-Duban-Auth-Token'],
 }));
 
-// 全局请求超时（30秒，防止慢请求耗尽资源）
-app.use((_req, res, next) => {
+// 全局请求超时（30秒，防止慢请求耗尽资源）；SSE 流式响应不适用（headers 立即发送、连接长驻）；
+// 附件上传按 50MB 上限放宽到 300 秒：总耗时 = 客户端上行传输 + 服务端转存 COS 两段叠加，
+// 实测跨云公网 50MB 会超过 180 秒。
+app.use((req: import('express').Request, res, next) => {
+  if (req.path === '/api/messages/stream') return next();
+  const isAttachmentUpload = req.path.startsWith('/api/attachments/');
   const timeout = setTimeout(() => {
     if (!res.headersSent) {
       res.status(503).json({ error: '请求超时，请稍后重试' });
     }
-  }, 30000);
+  }, isAttachmentUpload ? 300000 : 30000);
   res.on('finish', () => clearTimeout(timeout));
   next();
 });
 
 // ── 速率限制 ──
-// 全局限制：每 IP 每分钟最多 600 请求（平均 10 req/s）
+// 全局限制：优先按用户限流，回退到 IP 限流
 const M = 60 * 1000;
-const requestCounts = new Map<string, { count: number; resetAt: number }>();
 const GLOBAL_RATE_LIMIT = Number(process.env.RATE_LIMIT_PER_MINUTE) || 600;
 
 // 本地回环地址白名单（开发环境 HMR 会产生大量请求）
 const LOCALHOST_IPS = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1', 'localhost']);
 const isDev = process.env.NODE_ENV !== 'production';
 
-app.use((req, res, next) => {
-  const ip = req.ip || req.socket.remoteAddress || 'unknown';
-
-  // 开发环境下本地回环地址不限流
-  if (isDev && LOCALHOST_IPS.has(ip)) {
-    return next();
-  }
-
-  const now = Date.now();
-  let entry = requestCounts.get(ip);
-
-  if (!entry || now > entry.resetAt) {
-    entry = { count: 0, resetAt: now + M };
-    requestCounts.set(ip, entry);
-  }
-
-  entry.count++;
-  if (entry.count > GLOBAL_RATE_LIMIT) {
-    return res.status(429).json({ error: '请求过于频繁，请稍后重试' });
-  }
-
-  next();
-});
-
-// 定期清理速率限制记录
-setInterval(() => {
-  const now = Date.now();
-  for (const [ip, entry] of requestCounts) {
-    if (now > entry.resetAt) requestCounts.delete(ip);
-  }
-}, 5 * M);
+app.use(createRateLimitMiddleware({
+  limit: GLOBAL_RATE_LIMIT,
+  windowMs: M,
+  skip: (req) => isDev && LOCALHOST_IPS.has(req.ip || req.socket.remoteAddress || ''),
+  // 优先使用用户 ID 限流（避免同一公司 IP 下多用户误伤），无认证时回退到 IP
+  keyGenerator: (req) => {
+    const authUser = (req as any).authUser;
+    return authUser?.id || req.ip || req.socket.remoteAddress || 'unknown';
+  },
+}));
 
 // ── 健康检查（不受限流影响） ──
 app.get('/health', (_req, res) => res.json(getHealthPayload()));
@@ -103,6 +91,9 @@ app.get('/api/health', (_req, res) => res.json(getHealthPayload()));
 
 // 企业微信回调（无需认证）
 app.use('/api/wecom', wecomRouter);
+
+// 消息 SSE 推送（token 经 query 鉴权，路由内部自校验；需挂在全局超时中间件豁免之后）
+app.use('/api/messages/stream', messagesStreamRouter);
 
 // ── 业务路由 ──
 app.use('/api/auth', authRouter);
@@ -115,7 +106,9 @@ app.use('/api/departments', requireAuth, cacheMiddleware('departments', cacheTtl
 app.use('/api/dictionaries', requireAuth, cacheMiddleware('dictionaries', cacheTtl), dictionariesRouter);
 
 // 高频数据路由
-app.use('/api/items', requireAuth, itemsRouter);
+// items 路由包含批量导入等慢操作，添加 15s 超时保护
+app.use('/api/items', requireAuth, queryTimeoutMiddleware(15000), itemsRouter);
+app.use('/api/attachments', requireAuth, attachmentsRouter);
 app.use('/api/messages', requireAuth, messagesRouter);
 app.use('/api/urge', requireAuth, urgeRouter);
 app.use('/api/users', requireAuth, usersRouter);
@@ -140,7 +133,16 @@ app.use((err: Error, _req: express.Request, res: express.Response, _next: expres
 // ── 启动服务 ──
 async function startServer() {
   const db = await getDb();
+  const redis = await initializeRedis();
+  if (process.env.REDIS_REQUIRED === 'true' && !redis) {
+    throw new Error('REDIS_REQUIRED=true but Redis is unavailable');
+  }
   await ensureDatabaseSchema(db);
+  // 部署后一次性回填 item_access（表空且 items 有数据时执行，GET_LOCK 防多实例并发）
+  const mysqlPool = (db as any)?.session?.client;
+  if (mysqlPool?.getConnection) {
+    await ensureItemAccessBackfillAtStartup(db, mysqlPool);
+  }
   const stopAutoEngine = startItemAutoEngine(db);
 
   const server = app.listen(PORT, () => {
@@ -154,6 +156,7 @@ async function startServer() {
       console.log('HTTP server closed');
     });
     stopAutoEngine();
+    await closeRedis();
     await closeDb();
     process.exit(0);
   };

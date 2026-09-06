@@ -11,14 +11,17 @@
     "pm2:restart": "pm2 restart duban-server",
     "db:generate": "drizzle-kit generate",
     "db:push": "drizzle-kit push",
-    "db:seed": "tsx src/db/seed.ts"
+    "db:seed": "tsx src/db/seed.ts",
+    "attachments:migrate": "tsx src/scripts/migrate-base64-attachments.ts"
   },
   "dependencies": {
     "cors": "^2.8.5",
+    "cos-nodejs-sdk-v5": "^2.15.4",
     "dotenv": "^16.4.7",
     "drizzle-orm": "^0.38.3",
     "express": "^4.21.1",
     "mysql2": "^3.11.5",
+    "redis": "^4.7.1",
     "uuid": "^11.0.3"
   },
   "devDependencies": {

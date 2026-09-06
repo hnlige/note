@@ -16,10 +16,11 @@ resolve_host_runtime_env_file() {
     local server_dir="$1"
     local compiled_env_file="$server_dir/dist/.env"
 
-    # PM2 实际从 /opt/duban/server/dist 启动，/opt/duban/server/.env 是已验证的运行时配置。
+    # PM2 从独立运行时目录启动，私有 .env 不进入代码仓库或构建收件目录。
     # 部署、健康检查和角色刷新必须复用这份配置，不能用构建产物中的 .env 覆盖线上数据库连接。
-    if [ -f "/opt/duban/server/.env" ]; then
-        printf '%s' "/opt/duban/server/.env"
+    local runtime_env_file="${RUNTIME_ENV_FILE:-/opt/duban/server/.env}"
+    if [ -f "$runtime_env_file" ]; then
+        printf '%s' "$runtime_env_file"
         return 0
     fi
 

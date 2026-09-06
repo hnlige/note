@@ -103,12 +103,39 @@ authRouter.post('/change-password', requireAuth, async (req: AuthenticatedReques
 
     await db
       .update(usersTable)
-      .set({ password: await hashPassword(req.body.newPassword) } as never)
+      // 递增 sessionVersion 让改密前签发的所有 token（含其他设备）立即失效
+      .set({ password: await hashPassword(req.body.newPassword), sessionVersion: (user.sessionVersion ?? 0) + 1 } as never)
       .where(eq(usersTable.id, user.id));
 
     return res.json({ success: true });
   } catch (error) {
     console.error('Change password error:', error);
     return res.status(500).json({ error: '修改密码失败' });
+  }
+});
+
+authRouter.post('/logout', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const db = await getDb();
+    const { users: usersTable } = await import('../db/schema');
+    const { eq } = await import('drizzle-orm');
+    const [user] = await db
+      .select({ id: usersTable.id, sessionVersion: usersTable.sessionVersion })
+      .from(usersTable)
+      .where(eq(usersTable.id, req.authUser?.id || ''))
+      .limit(1);
+
+    if (user) {
+      // 用户级吊销：sessionVersion+1 使该用户全部已签发 token 失效
+      await db
+        .update(usersTable)
+        .set({ sessionVersion: (user.sessionVersion ?? 0) + 1 } as never)
+        .where(eq(usersTable.id, user.id));
+    }
+
+    return res.json({ success: true });
+  } catch (error) {
+    console.error('Logout error:', error);
+    return res.status(500).json({ error: '登出失败' });
   }
 });

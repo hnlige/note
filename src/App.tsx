@@ -29,6 +29,11 @@ const ReassignSupervision = lazy(() => import('./pages/Admin/ReassignSupervision
 const LoginPage = lazy(() => import('./pages/Login'));
 const MobileLogin = lazy(() => import('./pages/Mobile/Login'));
 const MobileHome = lazy(() => import('./pages/Mobile/Home'));
+const MobileTodo = lazy(() => import('./pages/Mobile/Todo'));
+const MobileSupervision = lazy(() => import('./pages/Mobile/Supervision'));
+const MobileItemDetail = lazy(() => import('./pages/Mobile/ItemDetail'));
+const MobileMessages = lazy(() => import('./pages/Mobile/Messages'));
+const MobileMine = lazy(() => import('./pages/Mobile/Mine'));
 
 const routeFallback = (
   <div className="min-h-screen bg-slate-50" />
@@ -73,6 +78,11 @@ const App = () => {
           <Route path="/knowledge" element={<ProtectedRoute allowedRoles={['ADMIN','OWNER','FOLLOWER']}><Knowledge /></ProtectedRoute>} />
           <Route path="/m/login" element={<MobileLogin />} />
           <Route path="/m/home" element={<ProtectedRoute allowedRoles={['ADMIN','OWNER','FOLLOWER']}><MobileHome /></ProtectedRoute>} />
+          <Route path="/m/todo" element={<ProtectedRoute allowedRoles={['ADMIN','OWNER','FOLLOWER']}><MobileTodo /></ProtectedRoute>} />
+          <Route path="/m/supervision" element={<ProtectedRoute allowedRoles={['ADMIN','FOLLOWER']}><MobileSupervision /></ProtectedRoute>} />
+          <Route path="/m/item/:id" element={<ProtectedRoute allowedRoles={['ADMIN','OWNER','FOLLOWER']}><MobileItemDetail /></ProtectedRoute>} />
+          <Route path="/m/messages" element={<ProtectedRoute allowedRoles={['ADMIN','OWNER','FOLLOWER']}><MobileMessages /></ProtectedRoute>} />
+          <Route path="/m/mine" element={<ProtectedRoute allowedRoles={['ADMIN','OWNER','FOLLOWER']}><MobileMine /></ProtectedRoute>} />
         </Routes>
       </Suspense>
     </Router>

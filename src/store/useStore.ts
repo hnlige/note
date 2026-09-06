@@ -1,14 +1,15 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
-import { User, UserRole, SupervisionItem, Activity, TimelineNode, UrgeRecord, Template, DeptNode, Message, Role, OperationLog, KnowledgeDoc, AsyncTask, AuditRecord, GlobalRules, DictionaryItem, LightRecord, OrgUser, DataScope, FollowerDataScope, AllowedAction, ItemStatus } from '../types';
+import { User, UserRole, SupervisionItem, Activity, TimelineNode, UrgeRecord, Template, DeptNode, Message, Role, OperationLog, KnowledgeDoc, AsyncTask, AuditRecord, GlobalRules, DictionaryItem, LightRecord, OrgUser, DataScope, FollowerDataScope, AllowedAction, ItemStatus, Attachment } from '../types';
 import { getMissingRolesToCreate, mapRemoteRoleToRole } from './roles.sync';
 import { normalizeMessagePayload, normalizeUrgePayload } from './notification-payload';
 import { canAccessByAuthCodes, canUseAllowedAction, getRolesByUser, getStrictUserAuthCodes } from './role-access';
-import { normalizeRemoteItem, resolveSyncedItems } from './item-sync';
+import { normalizeRemoteItem, resolveSyncedItems, unpackItemsListResponse } from './item-sync';
 import type { ItemPageAuth } from '../lib/api';
-import { aggregateSubTaskStatus, getEffectiveStatusForUser, syncAllSubTasks, updateUserSubTaskForIdentity } from '../lib/item-format';
+import { aggregateSubTaskStatus, getEffectiveStatusForUserIdentity, isItemOwnerForUser, syncAllSubTasks, updateUserSubTaskForIdentity } from '../lib/item-format';
 import { generateClientId } from '../lib/id';
 import { PERMISSION_TREE } from '../permissions/page-actions';
+import { toast } from '../lib/toastEmitter';
 
 export { normalizeRemoteItem } from './item-sync';
 
@@ -44,6 +45,7 @@ const ITEM_API_UPDATE_FIELDS = new Set([
   'sharedWith',
   'attachments',
   'timeline',
+  'changeHistory',
 ]);
 
 function getItemApiUpdates(updates: Partial<SupervisionItem>): Partial<SupervisionItem> {
@@ -53,7 +55,9 @@ function getItemApiUpdates(updates: Partial<SupervisionItem>): Partial<Supervisi
 }
 
 function warnAndRollbackItems(error: unknown, setItems: (items: SupervisionItem[]) => void, previousItems: SupervisionItem[]) {
+  const message = error instanceof Error ? error.message : '操作失败，请稍后重试';
   console.warn('同步后端失败:', error);
+  toast(message, 'error');
   setItems(previousItems);
 }
 
@@ -90,7 +94,7 @@ interface WorkbenchState {
   deleteTemplate: (id: string) => Promise<void>;
   publishTemplate: (id: string) => Promise<void>;
   unpublishTemplate: (id: string) => Promise<void>;
-  addUrgeRecord: (record: Omit<UrgeRecord, 'id' | 'timestamp'>) => Promise<void>;
+  addUrgeRecord: (record: Omit<UrgeRecord, 'id' | 'timestamp'>) => Promise<{ ok: boolean; error?: string }>;
   markAutoUrged: (key: string, dateStr: string) => void;
   clearStaleAutoUrged: (todayStr: string) => void;
   updateUrgeRecord: (id: string, updates: Partial<UrgeRecord>) => Promise<void>;
@@ -103,6 +107,7 @@ interface WorkbenchState {
   addRole: (role: Role) => Promise<void>;
   deleteRole: (id: string) => Promise<void>;
   addAsyncTask: (task: Omit<AsyncTask, 'id' | 'startTime' | 'progress' | 'status'>) => Promise<void>;
+  fetchAsyncTasks: () => Promise<void>;
   updateAsyncTask: (id: string, updates: Partial<AsyncTask>) => Promise<void>;
   addAuditRecord: (record: Omit<AuditRecord, 'id' | 'submitTime' | 'status'>) => Promise<void>;
   updateAuditRecord: (id: string, updates: Partial<AuditRecord>) => Promise<void>;
@@ -126,12 +131,12 @@ interface WorkbenchState {
   undisableItem: (id: string, pageAuth?: ItemPageAuth) => void;
   /** 暂缓事项 */
   delayItem: (id: string, reason: string, newDeadline: string, pageAuth?: ItemPageAuth) => void;
-  /** 责任人申请延期 */
-  postponeItem: (id: string, reason: string, newDeadline: string, pageAuth?: ItemPageAuth) => void;
+  /** 责任人申请延期（ok=false 时 error 为可展示给用户的失败原因） */
+  postponeItem: (id: string, reason: string, newDeadline: string, pageAuth?: ItemPageAuth) => Promise<{ ok: boolean; error?: string }>;
   /** 重启事项 */
   restartItem: (id: string, newDeadline: string, newContent?: string, pageAuth?: ItemPageAuth) => void;
   /** 责任人申请完成 */
-  applyComplete: (id: string, note: string, pageAuth?: ItemPageAuth) => void;
+  applyComplete: (id: string, note: string, pageAuth?: ItemPageAuth, attachments?: Attachment[]) => Promise<void>;
   /** 跟进人未按要求完成 */
   applyUnsatisfied: (id: string, note: string, pageAuth?: ItemPageAuth) => void;
   /** 跟进人申请完成（给上级审批） */
@@ -165,6 +170,7 @@ interface WorkbenchState {
   syncDictionaries: () => Promise<void>;
   syncGlobalRules: () => Promise<void>;
   syncAuditRecords: () => Promise<void>;
+  syncLogs: () => Promise<void>;
 }
 
 export const partializePersistedState = (state: WorkbenchState) => ({
@@ -176,6 +182,24 @@ export const migratePersistedState = (persistedState: unknown, version: number) 
   if (version < 6) return undefined;
   return persistedState as WorkbenchState;
 };
+
+/**
+ * 登录身份显式落盘：zustand persist 的自动写入在部分环境下不生效（登录成功后刷新或
+ * 新开标签会恢复出上一位登录者的持久化身份，与当前 token 不一致）。此处按 persist 的
+ * 存储结构（{ state: { currentUser, searchTerm }, version: 6 }）直接覆写 currentUser，
+ * 保留其余已持久化字段。
+ */
+export function writePersistedIdentity(user: User): void {
+  try {
+    const raw = localStorage.getItem('duban-storage');
+    const parsed = raw ? JSON.parse(raw) : { state: {}, version: 6 };
+    parsed.state = { ...(parsed.state || {}), currentUser: user };
+    parsed.version = 6;
+    localStorage.setItem('duban-storage', JSON.stringify(parsed));
+  } catch {
+    // 存储不可用时跳过：merge 会按匿名处理，用户重新登录即可恢复。
+  }
+}
 
 
 const generateTimeline = (itemId: string): TimelineNode[] => [
@@ -491,7 +515,7 @@ const allPageActions = Object.fromEntries(
 
 const initialRoles: Role[] = [
   { id: 'r1', name: '超级管理员', authCodes: ['ALL'], dataScope: 'ALL', followerDataScope: 'ALL', allowedActions: ['READ', 'SEARCH', 'EXPORT', 'EDIT_ITEM', 'EDIT_SYSTEM', 'CREATE_ITEM', 'DELETE_ITEM', 'SIGN_ITEM', 'FEEDBACK_ITEM', 'DELAY_ITEM', 'URGE_ITEM', 'CHANGE_ITEM', 'SUSPEND_ITEM', 'RESTART_ITEM', 'DISABLE_ITEM', 'REJECT_ITEM', 'APPROVE_ITEM', 'APPLY_COMPLETE_ITEM', 'MARK_UNSATISFIED_ITEM', 'SHARE_ITEM'], allowedPageActions: allPageActions },
-  { id: 'r2', name: '督办跟进人', authCodes: ['MENU_WORKBENCH', 'MENU_MY_ITEMS', 'MENU_ITEMS', 'MENU_MONITORING', 'MENU_STATISTICS', 'MENU_MESSAGES', 'MENU_RECYCLE_BIN'], dataScope: 'SELF', followerDataScope: 'SELF', allowedActions: ['READ', 'SEARCH', 'EXPORT', 'EDIT_ITEM', 'CREATE_ITEM', 'DELETE_ITEM', 'URGE_ITEM', 'SIGN_ITEM', 'FEEDBACK_ITEM', 'CHANGE_ITEM', 'SUSPEND_ITEM', 'RESTART_ITEM', 'DISABLE_ITEM', 'REJECT_ITEM', 'APPROVE_ITEM', 'APPLY_COMPLETE_ITEM', 'MARK_UNSATISFIED_ITEM', 'SHARE_ITEM'] },
+  { id: 'r2', name: '督办跟进人', authCodes: ['MENU_WORKBENCH', 'MENU_MY_ITEMS', 'MENU_ITEMS', 'MENU_MONITORING', 'MENU_STATISTICS', 'MENU_MESSAGES', 'MENU_RECYCLE_BIN'], dataScope: 'SELF', followerDataScope: 'SELF', allowedActions: ['READ', 'SEARCH', 'EXPORT', 'EDIT_ITEM', 'CREATE_ITEM', 'DELETE_ITEM', 'URGE_ITEM', 'SIGN_ITEM', 'FEEDBACK_ITEM', 'SUSPEND_ITEM', 'RESTART_ITEM', 'DISABLE_ITEM', 'REJECT_ITEM', 'APPROVE_ITEM', 'APPLY_COMPLETE_ITEM', 'MARK_UNSATISFIED_ITEM', 'SHARE_ITEM'] },
   { id: 'r3', name: '部门管理员', authCodes: ['MENU_WORKBENCH', 'MENU_MY_ITEMS', 'MENU_ITEMS', 'MENU_MONITORING', 'MENU_STATISTICS', 'MENU_MESSAGES'], dataScope: 'DEPT', followerDataScope: 'DEPT', allowedActions: ['READ', 'SEARCH', 'EXPORT'], allowedPageActions: { MENU_WORKBENCH: ['READ', 'SEARCH', 'EXPORT'], MENU_MY_ITEMS: ['READ', 'SEARCH'], MENU_ITEMS: ['READ', 'SEARCH', 'EXPORT'], MENU_STATISTICS: ['READ', 'SEARCH', 'EXPORT'] } },
   { id: 'r4dtsn6m', name: '督办管理员', authCodes: ['ALL'], dataScope: 'ALL', followerDataScope: 'ALL', allowedActions: ['READ', 'SEARCH', 'EXPORT', 'EDIT_ITEM', 'EDIT_SYSTEM', 'CREATE_ITEM', 'DELETE_ITEM', 'SIGN_ITEM', 'FEEDBACK_ITEM', 'DELAY_ITEM', 'URGE_ITEM', 'CHANGE_ITEM', 'SUSPEND_ITEM', 'RESTART_ITEM', 'DISABLE_ITEM', 'REJECT_ITEM', 'APPROVE_ITEM', 'APPLY_COMPLETE_ITEM', 'MARK_UNSATISFIED_ITEM', 'SHARE_ITEM'], allowedPageActions: allPageActions },
   { id: 'r5', name: '组织管理员', authCodes: ['MENU_WORKBENCH', 'MENU_MY_ITEMS', 'MENU_ITEMS', 'MENU_MESSAGES', 'MENU_MONITORING', 'MENU_STATISTICS', 'MENU_RECYCLE_BIN'], dataScope: 'MULTI_ORG', followerDataScope: 'MULTI_ORG', allowedActions: ['READ', 'SEARCH', 'EXPORT', 'CREATE_ITEM', 'DELETE_ITEM', 'URGE_ITEM', 'CHANGE_ITEM', 'SUSPEND_ITEM', 'RESTART_ITEM', 'DISABLE_ITEM', 'REJECT_ITEM', 'APPROVE_ITEM', 'APPLY_COMPLETE_ITEM', 'MARK_UNSATISFIED_ITEM', 'SHARE_ITEM'] },
@@ -600,6 +624,8 @@ export const useStore = create<WorkbenchState>()(
         urgeRecords: isSwitchingUser ? [] : state.urgeRecords,
       };
     });
+
+    writePersistedIdentity(user);
   },
   logout: () => {
     set({
@@ -618,8 +644,15 @@ export const useStore = create<WorkbenchState>()(
       knowledge: [],
       autoUrgedKeys: {},
     });
-    try { localStorage.removeItem('duban-auth-token'); } catch {}
-    try { localStorage.removeItem('duban-storage'); } catch {}
+    // 服务端吊销会话（sessionVersion+1，全端失效）。此时 token 仍在本地，
+    // 请求可携带凭证发出；无论成败，finally 再清本地凭证完成登出。
+    void import('../lib/api')
+      .then(({ api }) => api.auth.logout())
+      .catch(() => {})
+      .finally(() => {
+        try { localStorage.removeItem('duban-auth-token'); } catch {}
+        try { localStorage.removeItem('duban-storage'); } catch {}
+      });
   },
   setItems: (items) => set({ items }),
   addItem: (item) => {
@@ -668,13 +701,13 @@ export const useStore = create<WorkbenchState>()(
             id: `${createdItem.id}-${ownerId}`,
             parentItemId: createdItem.id,
             title: `${createdItem.serialNo} - ${ownerNames[index] || ownerId}`,
-            deadline: createdItem.deadline,
+            deadline: createdItem.requiredCompletionDate || createdItem.deadline,
             status: 'PENDING' as ItemStatus,
             assigneeId: ownerId,
             assigneeName: ownerNames[index] || ownerId,
             progress: 0,
             requiredCompletionDate: createdItem.requiredCompletionDate,
-            plannedCompletionDate: createdItem.plannedCompletionDate,
+            plannedCompletionDate: createdItem.plannedCompletionDate || '',
           })),
     };
 
@@ -730,7 +763,9 @@ export const useStore = create<WorkbenchState>()(
         const { api } = await import('../lib/api');
         await api.items.update(id, apiUpdates, pageAuth);
       } catch (e) {
+        const message = e instanceof Error ? e.message : '保存失败，请稍后重试';
         console.warn('同步后端失败:', e);
+        toast(message, 'error');
         return false;
       }
     }
@@ -824,8 +859,11 @@ export const useStore = create<WorkbenchState>()(
       const { api } = await import('../lib/api');
       await api.urges.create(newRecord);
       set((state) => ({ urgeRecords: [newRecord, ...state.urgeRecords] }));
+      return { ok: true };
     } catch (e) {
-      console.warn('同步后端失败:', e);
+      console.error('发起催办失败:', e);
+      // 透传后端具体原因（如数据权限、接收人校验失败），避免页面只能展示笼统文案。
+      return { ok: false, error: (e instanceof Error && e.message) || '发起催办失败，请确认责任人后重试' };
     }
   },
   // 记录“某事项今日已自动催办/超期”，随 localStorage 持久化，刷新页面后不重复生成
@@ -901,10 +939,11 @@ export const useStore = create<WorkbenchState>()(
   addLog: async (log) => {
     try {
       const { api } = await import('../lib/api');
-      const result = await api.logs.create({ action: log.action, module: log.module });
+      const result = await api.logs.create({ action: log.action, module: log.module, detail: log.detail });
       set((state) => ({ logs: [result.log, ...state.logs] }));
     } catch (e) {
-      console.warn('同步后端失败:', e);
+      // 操作日志写入失败不应阻断主业务流程，但必须可观测，避免静默丢失无人知晓
+      console.error('[addLog] 操作日志写入失败，请检查后端 /api/logs 与角色写日志权限:', e);
     }
   },
   updateRole: async (id, updates) => {
@@ -993,6 +1032,19 @@ export const useStore = create<WorkbenchState>()(
       }));
     } catch (e) {
       console.warn('同步后端失败:', e);
+    }
+  },
+  fetchAsyncTasks: async () => {
+    try {
+      const { api } = await import('../lib/api');
+      const { mapServerAsyncTask, sortTasksNewestFirst } = await import('./task-sync');
+      const data = await api.asyncTasks.list();
+      if (Array.isArray(data)) {
+        set({ asyncTasks: sortTasksNewestFirst(data.map(mapServerAsyncTask)) });
+      }
+    } catch (e) {
+      // 无 MENU_TASKS 权限或后端未启动时静默降级，保留现有列表
+      console.warn('fetchAsyncTasks 失败（后端可能未启动或无任务监控权限）:', e);
     }
   },
   addAuditRecord: async (record) => {
@@ -1233,9 +1285,16 @@ export const useStore = create<WorkbenchState>()(
         activities: [{ id: Math.random().toString(36).slice(2, 11), content: `${state.currentUser.name} 废弃了督办事项：【${item.title}】`, timestamp: new Date().toLocaleString(), type: 'STATUS_CHANGE' } as Activity, ...state.activities]
       };
     });
-    import('../lib/api').then(({ api }) =>
-      api.items.update(id, nextApiPayload, pageAuth).catch((e) => warnAndRollbackItems(e, (items) => set({ items }), previousItems))
-    );
+    import('../lib/api').then(async ({ api }) => {
+      try {
+        await api.items.update(id, nextApiPayload, pageAuth);
+        // 服务端聚合的父/子任务状态可能与本地乐观更新存在差异，成功后全量回读权威数据，
+        // 避免按钮状态停留在过期快照上（表现为必须刷新页面才能继续操作）。
+        await get().syncItems();
+      } catch (e) {
+        warnAndRollbackItems(e, (items) => set({ items }), previousItems);
+      }
+    });
   },
   undisableItem: (id, pageAuth) => {
     const previousItems = get().items;
@@ -1256,9 +1315,14 @@ export const useStore = create<WorkbenchState>()(
         activities: [{ id: Math.random().toString(36).slice(2, 11), content: `${state.currentUser.name} 撤销废弃了督办事项：【${item.title}】`, timestamp: new Date().toLocaleString(), type: 'STATUS_CHANGE' } as Activity, ...state.activities]
       };
     });
-    import('../lib/api').then(({ api }) =>
-      api.items.update(id, nextApiPayload, pageAuth).catch((e) => warnAndRollbackItems(e, (items) => set({ items }), previousItems))
-    );
+    import('../lib/api').then(async ({ api }) => {
+      try {
+        await api.items.update(id, nextApiPayload, pageAuth);
+        await get().syncItems();
+      } catch (e) {
+        warnAndRollbackItems(e, (items) => set({ items }), previousItems);
+      }
+    });
   },
   delayItem: (id, reason, newDeadline, pageAuth) => {
     const previousItems = get().items;
@@ -1283,44 +1347,67 @@ export const useStore = create<WorkbenchState>()(
         activities: [{ id: Math.random().toString(36).slice(2, 11), content: `${state.currentUser.name} 暂缓了督办事项：【${item.title}】`, timestamp: new Date().toLocaleString(), type: 'STATUS_CHANGE' } as Activity, ...state.activities]
       };
     });
-    import('../lib/api').then(({ api }) =>
-      api.items.update(id, nextApiPayload, pageAuth).catch((e) => warnAndRollbackItems(e, (items) => set({ items }), previousItems))
-    );
+    import('../lib/api').then(async ({ api }) => {
+      try {
+        await api.items.update(id, nextApiPayload, pageAuth);
+        await get().syncItems();
+      } catch (e) {
+        warnAndRollbackItems(e, (items) => set({ items }), previousItems);
+      }
+    });
   },
-  postponeItem: (id, reason, newDeadline, pageAuth) => {
+  postponeItem: async (id, reason, newDeadline, pageAuth) => {
     const previousItems = get().items;
     const targetItem = previousItems.find(i => i.id === id);
-    const currentUserId = get().currentUser.id;
-    if (!targetItem) return;
-    const isOwner = targetItem.ownerId === currentUserId || targetItem.ownerIds?.includes(currentUserId);
-    const effectiveStatus = getEffectiveStatusForUser(targetItem, currentUserId);
-    if (!isOwner || effectiveStatus !== 'OVERDUE') return;
-    const isMultiOwner = (targetItem.subTasks?.length || 0) > 1;
-    let nextApiPayload: Partial<SupervisionItem> = isMultiOwner
-      ? { status: 'DELAYED' as ItemStatus }
-      : { status: 'DELAYED' as ItemStatus, deadline: newDeadline, plannedCompletionDate: newDeadline };
+    const currentUser = get().currentUser;
+    if (!targetItem) return { ok: false, error: '事项不存在或已刷新，请重新进入详情页' };
+    // 身份与超时判定必须和详情页展示口径一致（含子任务身份匹配），
+    // 否则会出现页面展示“申请延期”入口但提交被 store 静默拒绝。
+    if (!isItemOwnerForUser(targetItem, currentUser)) return { ok: false, error: '仅事项责任人可申请延期' };
+    const effectiveStatus = getEffectiveStatusForUserIdentity(targetItem, currentUser);
+    if (effectiveStatus !== 'OVERDUE') return { ok: false, error: '仅已超时的事项允许申请延期' };
+
+    // 时间轴节点随请求下发：服务端延期提示消息与时间轴都取自客户端节点，缺失会导致延期原因丢失。
+    const delayNode: TimelineNode = {
+      id: 't' + Date.now(),
+      type: 'DELAY',
+      user: currentUser.name,
+      content: `申请延期。原因：${reason}，新计划完成日期：${newDeadline}`,
+      timestamp: new Date().toISOString(),
+    };
+    // 无论单/多责任人，只要存在本人子任务就必须同步置为 DELAYED 并更新计划日期；
+    // 否则子任务停留 OVERDUE，反馈会被服务端“子任务已超时”拦截，页面反复出现申请延期。
+    const subTaskUpdate = updateUserSubTaskForIdentity(targetItem, currentUser, { status: 'DELAYED' as ItemStatus, plannedCompletionDate: newDeadline, deadline: newDeadline });
+    const nextApiPayload: Partial<SupervisionItem> = {
+      ...subTaskUpdate,
+      // 服务端延期分支以 status=DELAYED 触发，子任务聚合状态不能覆盖父级下发的 DELAYED。
+      status: 'DELAYED' as ItemStatus,
+      deadline: newDeadline,
+      plannedCompletionDate: newDeadline,
+      timeline: [delayNode],
+    };
     set((state) => {
       const item = state.items.find(i => i.id === id);
       if (!item) return state;
-      // 多责任人：仅修改当前责任人子任务的计划完成日期，不动全局要求日期
-      const subTaskUpdate = isMultiOwner
-        ? updateUserSubTaskForIdentity(item, state.currentUser, { status: 'DELAYED' as ItemStatus, plannedCompletionDate: newDeadline, deadline: newDeadline })
-        : {};
-      nextApiPayload = { ...nextApiPayload, ...subTaskUpdate };
       return {
         items: state.items.map(i => i.id === id ? {
           ...i,
           ...subTaskUpdate,
-          status: subTaskUpdate.status || (isMultiOwner ? i.status : 'DELAYED' as ItemStatus),
-          ...(isMultiOwner ? {} : { plannedCompletionDate: newDeadline, deadline: newDeadline }),
-          timeline: [...i.timeline, { id: 't' + Date.now(), type: 'DELAY', user: state.currentUser.name, content: `申请延期。原因：${reason}，新计划完成日期：${newDeadline}`, timestamp: new Date().toLocaleString() }],
+          status: subTaskUpdate.subTasks ? (subTaskUpdate.status || i.status) : 'DELAYED' as ItemStatus,
+          ...(subTaskUpdate.subTasks ? {} : { plannedCompletionDate: newDeadline, deadline: newDeadline }),
+          timeline: [...i.timeline, delayNode],
         } : i),
         activities: [{ id: Math.random().toString(36).slice(2, 11), content: `${state.currentUser.name} 对【${item.title}】申请延期`, timestamp: new Date().toLocaleString(), type: 'STATUS_CHANGE' } as Activity, ...state.activities]
       };
     });
-    import('../lib/api').then(({ api }) =>
-      api.items.update(id, nextApiPayload, pageAuth).catch((e) => warnAndRollbackItems(e, (items) => set({ items }), previousItems))
-    );
+    try {
+      const { api } = await import('../lib/api');
+      await api.items.update(id, nextApiPayload, pageAuth);
+      return { ok: true };
+    } catch (e) {
+      warnAndRollbackItems(e, (items) => set({ items }), previousItems);
+      return { ok: false, error: (e as Error)?.message || '延期申请失败，请稍后重试' };
+    }
   },
   restartItem: (id, newDeadline, _newContent, pageAuth) => {
     const previousItems = get().items;
@@ -1343,9 +1430,14 @@ export const useStore = create<WorkbenchState>()(
         activities: [{ id: Math.random().toString(36).slice(2, 11), content: `${state.currentUser.name} 重启了督办事项：【${item.title}】`, timestamp: new Date().toLocaleString(), type: 'STATUS_CHANGE' } as Activity, ...state.activities]
       };
     });
-    import('../lib/api').then(({ api }) =>
-      api.items.update(id, nextApiPayload, pageAuth).catch((e) => warnAndRollbackItems(e, (items) => set({ items }), previousItems))
-    );
+    import('../lib/api').then(async ({ api }) => {
+      try {
+        await api.items.update(id, nextApiPayload, pageAuth);
+        await get().syncItems();
+      } catch (e) {
+        warnAndRollbackItems(e, (items) => set({ items }), previousItems);
+      }
+    });
   },
   disableSubTask: (id, subTaskId, reason, pageAuth) => {
     const previousItems = get().items;
@@ -1366,9 +1458,14 @@ export const useStore = create<WorkbenchState>()(
         } : i),
       };
     });
-    import('../lib/api').then(({ api }) =>
-      api.items.update(id, nextApiPayload, pageAuth).catch((e) => warnAndRollbackItems(e, (items) => set({ items }), previousItems))
-    );
+    import('../lib/api').then(async ({ api }) => {
+      try {
+        await api.items.update(id, nextApiPayload, pageAuth);
+        await get().syncItems();
+      } catch (e) {
+        warnAndRollbackItems(e, (items) => set({ items }), previousItems);
+      }
+    });
   },
   restartSubTask: (id, subTaskId, pageAuth) => {
     const previousItems = get().items;
@@ -1389,9 +1486,14 @@ export const useStore = create<WorkbenchState>()(
         } : i),
       };
     });
-    import('../lib/api').then(({ api }) =>
-      api.items.update(id, nextApiPayload, pageAuth).catch((e) => warnAndRollbackItems(e, (items) => set({ items }), previousItems))
-    );
+    import('../lib/api').then(async ({ api }) => {
+      try {
+        await api.items.update(id, nextApiPayload, pageAuth);
+        await get().syncItems();
+      } catch (e) {
+        warnAndRollbackItems(e, (items) => set({ items }), previousItems);
+      }
+    });
   },
   urgeSubTask: (itemId, itemTitle, subTask, content) => {
     import('../lib/api').then(({ api }) =>
@@ -1407,26 +1509,49 @@ export const useStore = create<WorkbenchState>()(
       }).catch((e: unknown) => console.error('催办子任务失败', e))
     );
   },
-  applyComplete: (id, note, pageAuth) => {
+  applyComplete: async (id, note, pageAuth, attachments) => {
     const previousItems = get().items;
     let nextSubTasks: SupervisionItem['subTasks'];
-    let nextTimeline: SupervisionItem['timeline'];
+    let nextTimeline: SupervisionItem['timeline'] = [];
     set((state) => {
       const item = state.items.find(i => i.id === id);
       if (!item) return state;
-      nextSubTasks = item.subTasks?.map(task =>
-        task.assigneeId === state.currentUser.id
-          ? { ...task, status: 'REVIEWING' as ItemStatus, progress: 100, followerApprovedBy: '', finalApprovedBy: '' }
-          : task
-      );
-      nextTimeline = [...(item.timeline || []), { id: 't' + Date.now(), type: 'APPLY_COMPLETE', user: state.currentUser.name, content: `申请完成：${note}`, timestamp: new Date().toLocaleString() }];
+      const subTaskUpdates = updateUserSubTaskForIdentity(item, state.currentUser, {
+        status: 'REVIEWING' as ItemStatus,
+        progress: 100,
+        followerApprovedBy: '',
+        finalApprovedBy: '',
+      });
+      nextSubTasks = subTaskUpdates.subTasks;
+      const timelineNode: TimelineNode = {
+        id: 't' + Date.now(),
+        type: 'APPLY_COMPLETE',
+        user: state.currentUser.name,
+        content: `申请完成：${note}`,
+        timestamp: new Date().toLocaleString(),
+        attachments,
+      };
+      nextTimeline = [...(item.timeline || []), timelineNode];
       return {
-        items: state.items.map(i => i.id === id ? { ...i, status: 'REVIEWING' as ItemStatus, subTasks: nextSubTasks || i.subTasks, timeline: nextTimeline } : i)
+        items: state.items.map(i => i.id === id ? {
+          ...i,
+          status: subTaskUpdates.status || 'REVIEWING',
+          subTasks: nextSubTasks || i.subTasks,
+          timeline: nextTimeline,
+          ...(attachments?.length ? { attachments: [...(i.attachments || []), ...attachments] } : {}),
+        } : i)
       };
     });
-    import('../lib/api').then(({ api }) =>
-      api.items.update(id, { status: 'REVIEWING', subTasks: nextSubTasks, timeline: nextTimeline }, pageAuth).catch((e) => warnAndRollbackItems(e, (items) => set({ items }), previousItems))
-    );
+    const { api } = await import('../lib/api');
+    await api.items.update(id, {
+      status: 'REVIEWING',
+      subTasks: nextSubTasks,
+      timeline: nextTimeline,
+      ...(attachments?.length ? { attachments: [...(previousItems.find(i => i.id === id)?.attachments || []), ...attachments] } : {}),
+    }, pageAuth).catch((e) => {
+      warnAndRollbackItems(e, (items) => set({ items }), previousItems);
+      throw e;
+    });
   },
   applyUnsatisfied: (id, note, pageAuth) => {
     const previousItems = get().items;
@@ -1683,15 +1808,15 @@ export const useStore = create<WorkbenchState>()(
   syncItems: async (pageAuth) => {
     try {
       const { api } = await import('../lib/api');
-      const firstPage = await api.items.list(1, 200, pageAuth);
-      if (!Array.isArray(firstPage.data)) return;
-      const pages = [firstPage.data];
+      const firstPage = unpackItemsListResponse(await api.items.list(1, 200, pageAuth));
+      if (!firstPage) return;
+      const pages = [firstPage.items];
       // 现有工作台/统计仍依赖全局事项集合；按页取数保证服务端不会再全表加载时间轴。
       // 后续页面筛选迁移为服务端条件后，可删除这段兼容聚合。
-      for (let page = 2; page <= firstPage.pagination.totalPages; page += 1) {
-        const response = await api.items.list(page, firstPage.pagination.pageSize, pageAuth);
-        if (!Array.isArray(response.data)) break;
-        pages.push(response.data);
+      for (let page = 2; firstPage.pagination && page <= firstPage.pagination.totalPages; page += 1) {
+        const response = unpackItemsListResponse(await api.items.list(page, firstPage.pagination.pageSize, pageAuth));
+        if (!response) break;
+        pages.push(response.items);
       }
       set({
         items: resolveSyncedItems(pages.flat(), get().items, []),
@@ -1858,6 +1983,16 @@ export const useStore = create<WorkbenchState>()(
       if (Array.isArray(data)) set({ auditRecords: data as AuditRecord[] });
     } catch (e) {
       console.warn('syncAuditRecords 失败:', e);
+      throw e;
+    }
+  },
+  syncLogs: async () => {
+    try {
+      const { api } = await import('../lib/api');
+      const data = await api.logs.list();
+      if (Array.isArray(data)) set({ logs: data as OperationLog[] });
+    } catch (e) {
+      console.warn('syncLogs 失败:', e);
       throw e;
     }
   },

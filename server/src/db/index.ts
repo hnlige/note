@@ -19,7 +19,7 @@ export async function getDb() {
     uri: DATABASE_URL,
     connectionLimit: Number(process.env.DB_POOL_SIZE) || 50,
     waitForConnections: true,
-    queueLimit: 0,
+    queueLimit: Number(process.env.DB_QUEUE_LIMIT) || 100, // 限制队列深度，防止 OOM
     connectTimeout: 10000,
     enableKeepAlive: true,
     keepAliveInitialDelay: 10000,

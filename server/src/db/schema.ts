@@ -67,6 +67,7 @@ export const items = mysqlTable('items', {
   subTasks: json('sub_tasks'),
   sharedWith: json('shared_with'),
   attachments: json('attachments'),
+  changeHistory: json('change_history'),
   originalStatus: varchar('original_status', { length: 20 }),
   deletedAt: datetime('deleted_at'),
   deletedById: varchar('deleted_by_id', { length: 36 }),
@@ -76,6 +77,18 @@ export const items = mysqlTable('items', {
   createdAtIdIdx: index('items_created_at_id_idx').on(table.createdAt, table.id),
   ownerCreatedAtIdx: index('items_owner_created_at_idx').on(table.ownerId, table.createdAt),
   followerCreatedAtIdx: index('items_follower_created_at_idx').on(table.followerId, table.createdAt),
+}));
+
+// ─── 事项可见性关联表 ───
+// 行级权限的索引化形态：把 items 表 JSON 列里的人员关系拆成 (item, user, relation) 三元组，
+// 列表查询用 EXISTS 子查询走 (user_id, relation, item_id) 索引，替代 JSON_CONTAINS 全表扫描。
+export const itemAccess = mysqlTable('item_access', {
+  itemId: varchar('item_id', { length: 36 }).notNull(),
+  userId: varchar('user_id', { length: 36 }).notNull(),
+  relation: varchar('relation', { length: 20 }).notNull(),
+}, (table) => ({
+  pk: primaryKey({ columns: [table.itemId, table.userId, table.relation] }),
+  userRelationIdx: index('item_access_user_relation_idx').on(table.userId, table.relation, table.itemId),
 }));
 
 // ─── 时间轴节点 ───
@@ -107,7 +120,7 @@ export const urgeRecords = mysqlTable('urge_records', {
   content: text('content'),
   method: varchar('method', { length: 20 }).notNull().default('MESSAGE'),
   batchId: varchar('batch_id', { length: 36 }),
-  subTaskId: varchar('sub_task_id', { length: 36 }),
+  subTaskId: varchar('sub_task_id', { length: 128 }),
   idempotencyKey: varchar('idempotency_key', { length: 64 }),
   scope: varchar('scope', { length: 20 }).notNull().default('SINGLE_ASSIGNEE'),
   source: varchar('source', { length: 20 }).notNull().default('MANUAL'),
@@ -132,7 +145,10 @@ export const messages = mysqlTable('messages', {
   receiverName: varchar('receiver_name', { length: 50 }),
   senderId: varchar('sender_id', { length: 36 }),
   senderName: varchar('sender_name', { length: 50 }),
-});
+}, (table) => ({
+  receiverTimestampIdx: index('messages_receiver_timestamp_id_idx').on(table.receiverId, table.timestamp, table.id),
+  timestampIdx: index('messages_timestamp_id_idx').on(table.timestamp, table.id),
+}));
 
 // 广播消息也必须按用户分别维护已读/删除状态，避免一人操作影响所有接收者。
 export const messageUserStates = mysqlTable('message_user_states', {
@@ -151,7 +167,9 @@ export const activities = mysqlTable('activities', {
   content: text('content'),
   timestamp: datetime('timestamp').notNull().default(sql`now()`),
   type: varchar('type', { length: 20 }).notNull(),
-});
+}, (table) => ({
+  timestampIdx: index('activities_timestamp_id_idx').on(table.timestamp, table.id),
+}));
 
 // ─── 亮灯记录 ───
 export const lightRecords = mysqlTable('light_records', {
@@ -230,7 +248,9 @@ export const auditRecords = mysqlTable('audit_records', {
   reviewedAt: datetime('reviewed_at'),
   rating: int('rating'),
   evaluation: text('evaluation'),
-});
+}, (table) => ({
+  submittedAtIdx: index('audit_records_submitted_at_id_idx').on(table.submittedAt, table.id),
+}));
 
 // ─── 异步任务表 ───
 export const asyncTasks = mysqlTable('async_tasks', {
@@ -267,6 +287,12 @@ export const globalRules = mysqlTable('global_rules', {
   wecomEncodingAesKey: varchar('wecom_encoding_aes_key', { length: 100 }),
   wecomCallbackUrl: varchar('wecom_callback_url', { length: 300 }),
   wecomTemplates: json('wecom_templates'),
+  // 通讯录同步助手的 Secret，仅用于 user/list_id 枚举成员ID（该接口只认通讯录同步 secret）
+  wecomContactSecret: varchar('wecom_contact_secret', { length: 512 }),
+  // 通讯录拉取链路：legacy = department/list + user/list；list_id = user/list_id + user/get
+  wecomSyncMode: varchar('wecom_sync_mode', { length: 20 }).default('legacy'),
+  // 移动端免登是否申请 snsapi_privateinfo 授权（弹窗同意后可回填手机号/邮箱）
+  wecomPrivateInfoEnabled: boolean('wecom_private_info_enabled').default(false),
   updatedAt: datetime('updated_at').notNull().default(sql`now()`),
 });
 
@@ -280,4 +306,6 @@ export const operationLogs = mysqlTable('operation_logs', {
   detail: text('detail'),
   ip: varchar('ip', { length: 50 }),
   timestamp: datetime('timestamp').notNull().default(sql`now()`),
-});
+}, (table) => ({
+  timestampIdx: index('operation_logs_timestamp_id_idx').on(table.timestamp, table.id),
+}));

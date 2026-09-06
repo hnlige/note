@@ -37,10 +37,12 @@ import { motion } from 'framer-motion';
 import { Drawer } from '../../components/Common/Drawer';
 import { PaginationFooter } from '../../components/Common/PaginationFooter';
 import { AllowedAction, Attachment, DeptNode, TimelineNode } from '../../types';
-import { formatDate, getEffectiveItemStatus, getEffectiveStatusForUserIdentity, getItemSignOffStatus, getItemStatusLabel, getItemStatusStyle, getSignOffStatusLabel, getSignOffStatusStyle, getUserSubTaskForIdentity, isItemFollowerForUser, isItemOwnerForUser, isManualDateOnOrAfter, isValidManualDateInput, normalizeManualDateInput, todayDateString, updateUserSubTaskForIdentity, formatDateTime } from '../../lib/item-format';
-import { canUseAllowedAction, getAssignedRoleIds } from '../../store/role-access';
+import { formatDate, formatUrgeTimelineContent, getEffectiveItemStatus, getEffectiveStatusForUserIdentity, getItemSignOffStatus, getItemStatusLabel, getItemStatusStyle, getSignOffStatusLabel, getSignOffStatusStyle, getUserSubTaskForIdentity, isItemFollowerForUser, isItemOwnerForUser, isManualDateOnOrAfter, isValidManualDateInput, normalizeManualDateInput, todayDateString, updateUserSubTaskForIdentity, formatDateTime } from '../../lib/item-format';
+import { getAssignedRoleIds } from '../../store/role-access';
+import { canUseDetailPageAction } from './detail-actions';
 import { getDetailBackNavigation, getDetailPageAuth, getMessageIdFromDetailState } from './detail-navigation';
 import { paginateTimelineNodes, prepareTimelineNodes, TIMELINE_PAGE_SIZE_OPTIONS } from './detail-timeline-pagination';
+import { getItemApprovalState } from '../../lib/item-approval';
 
 // 根据部门ID查找部门名称
 const findDeptName = (nodes: DeptNode[], deptId: string): string | null => {
@@ -248,56 +250,53 @@ const ItemDetail: React.FC = () => {
     setTimelinePage(1);
     setTimelinePageSize(nextPageSize);
   };
-  const followerSupervisorIds = useMemo(() => {
-    if (!item) return [];
-    const followerIds = [item.followerId, ...(item.followerIds || [])].filter(Boolean);
-    return [...new Set(followerIds.flatMap((followerId) => {
-      const follower = orgUsers.find(user => user.id === followerId);
-      const supervisorId = follower?.supervisorId;
-      const supervisor = supervisorId ? orgUsers.find(user => user.id === supervisorId && user.status === 'ACTIVE') : undefined;
-      return supervisor ? [supervisor.id] : [];
-    }))];
-  }, [item, orgUsers]);
-  const isFinalApprover = followerSupervisorIds.includes(currentUser.id);
-  // 审批状态（逐子任务独立，互不干扰）：
-  // - pendingFollowerApproval：存在「待审批完成」且尚未经本跟进人审批的子任务 → 跟进人显示「审批通过」
-  // - pendingFinalApproval：存在「待审批完成」且已过跟进人本级、尚待上级终审的子任务 → 上级显示「终审审批通过」
-  // - submittedToLeader：本跟进人已审批（存在其 followerApprovedBy 的子任务），等待上级终审
-  const itemSubTasks = item?.subTasks || [];
-  const isMultiSub = itemSubTasks.length > 1;
-  const pendingFollowerApproval = isFollower && !isFinalApprover && itemSubTasks.some(
-    (t: any) => t.status === 'REVIEWING' && !t.followerApprovedBy,
-  );
-  const pendingFinalApproval = (isFinalApprover || isAdmin) && itemSubTasks.some(
-    (t: any) => t.status === 'REVIEWING' && t.followerApprovedBy && !t.finalApprovedBy,
-  );
-  const submittedToLeader = isFollower && !isFinalApprover && itemSubTasks.some(
-    (t: any) => t.status === 'REVIEWING' && t.followerApprovedBy === currentUser.name && !t.finalApprovedBy,
-  );
-  // 兼容老数据/单责任人（无子任务）：沿用时间轴判定是否已审批
-  const hasCurrentUserApproved = (item?.timeline || []).some(n => n.type === 'APPROVE' && n.user === currentUser.name);
-  // 是否展示审批面板：多责任人按子任务独立判定；单责任人/老数据按时间轴判定
-  const showApprovePanel = (isAdmin || isFollower || isFinalApprover) && (
-    isMultiSub ? (pendingFollowerApproval || pendingFinalApproval) : !hasCurrentUserApproved
-  );
+  const approvalState = item
+    ? getItemApprovalState(item, currentUser, orgUsers)
+    : { isFinalApprover: false, pendingFollowerApproval: false, pendingFinalApproval: false, submittedToLeader: false, showApprovePanel: false };
+  const { isFinalApprover, pendingFinalApproval, submittedToLeader, showApprovePanel } = approvalState;
   // 仅被分享查看、无任何事项角色关系的用户：只能查看，不能分享
   const isSharedViewerOnly = !isOwner && !isFollower && !isAdmin && Boolean(item?.sharedWith?.some(s => s.userId === currentUser.id));
   const normalizedIssuerIdentity = String(item?.issuerAccount || item?.issuerId || '').trim().toLowerCase();
   const currentIdentityKeys = [currentUser.id, currentUser.name, currentUser.username].map(value => String(value || '').trim().toLowerCase()).filter(Boolean);
   const currentOwnerSubTask = item ? getUserSubTaskForIdentity(item, currentUser) : undefined;
-  // 签收时是否需要填写计划完成日期：只看子任务/事项的 plannedCompletionDate 是否为空。
-  // 不再把 requiredCompletionDate（要求完成日期）算作已填——签收必须写入 plannedCompletionDate，
-  // 否则子任务的计划完成日期会永久为空。
-  const requiresPlannedDateOnSign = item
-    ? (currentOwnerSubTask ? !currentOwnerSubTask.plannedCompletionDate : !item.plannedCompletionDate)
-    : false;
-  const canLegacyEdit = canUseAllowedAction(currentUser, roles, 'EDIT_ITEM');
+  // 签收时的计划完成日期来源：有要求完成日期时直接按要求日期签收（后端同样口径，且不允许责任人覆盖），
+  // 仅在完全没有要求完成日期时才要求责任人补填计划完成日期。
+  const requiredCompletionDateForSign = currentOwnerSubTask?.requiredCompletionDate || item?.requiredCompletionDate || '';
+  const requiresPlannedDateOnSign = item ? (!requiredCompletionDateForSign && (currentOwnerSubTask ? !currentOwnerSubTask.plannedCompletionDate : !item.plannedCompletionDate)) : false;
+  // 按钮级权限按进入来源页面（itemPageAuth）判定，与后端 X-Page-Auth 校验同口径：
+  // 页面目录不含的动作（如「我的督办」下的变更）或页面级已取消的动作不再显示，
+  // 避免“按钮可见但提交必 403”或“角色配置取消后按钮仍显示”的口径漂移。
   const canPerform = (action: AllowedAction) =>
-    canLegacyEdit || canUseAllowedAction(currentUser, roles, action);
+    canUseDetailPageAction(currentUser, roles, itemPageAuth, action);
   const canDeleteByIssuerRule = Boolean(normalizedIssuerIdentity && currentIdentityKeys.includes(normalizedIssuerIdentity));
   const hasDeleteFallbackPrivilege = isAdmin || getAssignedRoleIds(currentUser).includes('r5');
 
   const activeUsers = useMemo(() => orgUsers.filter(u => u.status === 'ACTIVE'), [orgUsers]);
+  // 催办接收人必须使用事项保存的稳定用户 ID；仅用姓名回填会在用户列表未及时同步、
+  // 或存在同名账号时把姓名发送到后端，服务端无法匹配为该事项责任人而返回失败。
+  const urgeRecipientCandidates = useMemo(() => {
+    if (!item) return [];
+    const ownerIds = item.ownerIds?.length
+      ? item.ownerIds
+      : item.ownerId
+        ? [item.ownerId]
+        : [];
+    const ownerNames = item.ownerNames?.length
+      ? item.ownerNames
+      : item.ownerName
+        ? [item.ownerName]
+        : [];
+    if (ownerIds.length > 0) {
+      return ownerIds.map((id, index) => ({
+        id,
+        name: ownerNames[index] || activeUsers.find(user => user.id === id)?.name || id,
+      }));
+    }
+    return ownerNames
+      .map(name => activeUsers.find(user => user.name === name))
+      .filter((user): user is typeof activeUsers[number] => Boolean(user))
+      .map(user => ({ id: user.id, name: user.name }));
+  }, [activeUsers, item]);
   const latestCompletionApplication = useMemo(
     () => [...(item?.timeline || [])].reverse().find(node => node.type === 'APPLY_COMPLETE'),
     [item?.timeline],
@@ -306,12 +305,8 @@ const ItemDetail: React.FC = () => {
     setAttachments(item?.attachments || []);
   }, [item?.id, item?.attachments]);
 
-  const readFileAsDataUrl = (file: File) => new Promise<string>((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result || ''));
-    reader.onerror = () => reject(reader.error || new Error('读取附件失败'));
-    reader.readAsDataURL(file);
-  });
+  const uploadAttachments = (itemId: string, files: File[]) =>
+    Promise.all(files.map((file) => api.attachments.upload(itemId, file, itemPageAuth)));
 
   const getItemStatusUpdatesForCurrentOwner = (updates: Parameters<typeof updateUserSubTaskForIdentity>[2]) => {
     if (!item || !isOwner) return {};
@@ -335,14 +330,14 @@ const ItemDetail: React.FC = () => {
 
   const handleFeedbackAttachmentUpload = async (files: FileList | null) => {
     if (!item || !files?.length) return;
-    const uploadedAttachments = await Promise.all(Array.from(files).map(async (file) => ({
-      id: Math.random().toString(36).slice(2, 11),
-      name: file.name,
-      url: await readFileAsDataUrl(file),
-      size: (file.size / 1024).toFixed(1) + 'KB',
-      type: file.type || 'application/octet-stream',
-      uploadedAt: new Date().toISOString().split('T')[0],
-    })));
+    let uploadedAttachments: Attachment[];
+    try {
+      uploadedAttachments = await uploadAttachments(item.id, Array.from(files));
+    } catch (error) {
+      console.error('Upload feedback attachments error:', error);
+      showToast(error instanceof Error && error.message ? `附件上传失败：${error.message}` : '附件上传失败，请稍后重试', 'error');
+      return;
+    }
     const isFollowerFeedback = isFollower && !isOwner;
     const newNode = {
       id: 't' + Date.now(),
@@ -357,10 +352,8 @@ const ItemDetail: React.FC = () => {
       attachments: [...(item.attachments || []), ...uploadedAttachments],
       ...(!isFollowerFeedback ? { lastFeedbackDate: todayDateString() } : {}),
     });
-    if (!saved) {
-      showToast('附件上传失败，请稍后重试', 'error');
-      return;
-    }
+    // 附件本身已上传至对象存储；保存失败的具体原因由 store.updateItem 统一提示，避免重复且误导的“附件上传失败”。
+    if (!saved) return;
     setFeedbackFiles([]);
     setAttachments(prev => [...prev, ...uploadedAttachments]);
     addActivity({ content: `${currentUser.name} 为【${item.title}】上传了反馈附件`, type: 'FEEDBACK' });
@@ -369,14 +362,14 @@ const ItemDetail: React.FC = () => {
 
   const handleFeedback = async () => {
     if (!item || !feedbackText.trim()) return;
-    const feedbackAttachments = await Promise.all(feedbackFiles.map(async (file) => ({
-      id: Math.random().toString(36).slice(2, 11),
-      name: file.name,
-      url: await readFileAsDataUrl(file),
-      size: (file.size / 1024).toFixed(1) + 'KB',
-      type: file.type || 'application/octet-stream',
-      uploadedAt: new Date().toISOString().split('T')[0],
-    })));
+    let feedbackAttachments: Attachment[];
+    try {
+      feedbackAttachments = await uploadAttachments(item.id, feedbackFiles);
+    } catch (error) {
+      console.error('Upload feedback attachments error:', error);
+      showToast(error instanceof Error && error.message ? `附件上传失败：${error.message}` : '附件上传失败，请稍后重试', 'error');
+      return;
+    }
     const isFollowerFeedback = isFollower && !isOwner;
     const newNode = {
       id: 't' + Date.now(),
@@ -398,19 +391,17 @@ const ItemDetail: React.FC = () => {
       ...(feedbackAttachments.length > 0 ? { attachments: [...(item.attachments || []), ...feedbackAttachments] } : {}),
       ...(!isFollowerFeedback ? { lastFeedbackDate: todayDateString() } : {}),
     });
-    if (!saved) {
-      showToast('反馈提交失败，请稍后重试', 'error');
-      return;
-    }
+    // 附件本身已上传至对象存储；保存失败的具体原因由 store.updateItem 统一提示，避免重复且误导的“反馈提交失败”。
+    if (!saved) return;
     addActivity({ content: `${currentUser.name} 提交了【${item.title}】的进度反馈`, type: 'FEEDBACK' });
     setFeedbackText('');
     setFeedbackFiles([]);
     showToast('反馈已提交', 'success');
   };
 
-  const handleUrge = () => {
+  const handleUrge = async () => {
     if (!item || !urgeContent.trim() || urgeTargets.length === 0) return;
-    urgeTargets.forEach(target => {
+    const results = await Promise.all(urgeTargets.map(target =>
       store.addUrgeRecord({
         itemId: item.id,
         itemTitle: item.title,
@@ -421,8 +412,13 @@ const ItemDetail: React.FC = () => {
         status: 'UNREAD',
         method: 'SYSTEM',
         content: urgeContent
-      });
-    });
+      }),
+    ));
+    const failedResult = results.find(result => !result.ok);
+    if (failedResult) {
+      showToast(failedResult.error || '发起催办失败，请确认责任人后重试', 'error');
+      return;
+    }
     addActivity({
       content: `${currentUser.name} 对【${item.title}】进行了催办：${urgeContent}（催办对象：${urgeTargets.map(t => t.name).join('、')}）`,
       type: 'URGE'
@@ -652,10 +648,12 @@ const ItemDetail: React.FC = () => {
     addLog({ userName: currentUser.name, userId: currentUser.id, action: '撤销事项共享', module: '督办事项' });
   };
 
-  const handleSign = (plannedDate?: string) => {
+  const handleSign = (plannedDate?: string, options?: { useRequiredDate?: boolean }) => {
     if (!item) return;
     const normalizedPlannedDate = plannedDate ? normalizeManualDateInput(plannedDate) : undefined;
-    if (normalizedPlannedDate) {
+    // 直接按跟进人下发的要求完成日期签收时不做"不早于今天"拦截：该日期是既定截止依据，
+    // 超期未签收的场景仍应允许签收（后端签收同样直接采用要求日期，无此校验）。
+    if (normalizedPlannedDate && !options?.useRequiredDate) {
       if (!isValidManualDateInput(normalizedPlannedDate)) {
         showToast('计划完成日期请按年/月/日格式输入，例如：2026/06/03', 'warning');
         return;
@@ -665,7 +663,9 @@ const ItemDetail: React.FC = () => {
         return;
       }
     }
-    const plannedDateUpdates = normalizedPlannedDate
+    const isMultiOwner = Boolean(item.subTasks && item.subTasks.length > 1);
+    // 多责任人只更新当前责任人的子任务；事项级日期属于跟进人要求日期，不能被某一责任人覆盖。
+    const plannedDateUpdates = normalizedPlannedDate && !isMultiOwner
       ? { plannedCompletionDate: normalizedPlannedDate, deadline: normalizedPlannedDate }
       : {};
     const subTaskUpdates = getItemStatusUpdatesForCurrentOwner({ status: 'EXECUTING', ...plannedDateUpdates });
@@ -686,7 +686,8 @@ const ItemDetail: React.FC = () => {
       setIsSignOpen(true);
       return;
     }
-    handleSign();
+    // 有要求完成日期：直接按要求日期签收，无需责任人再填计划完成日期
+    handleSign(requiredCompletionDateForSign || undefined, { useRequiredDate: true });
   };
 
   const handleSubTaskSubmit = async () => {
@@ -720,10 +721,13 @@ const ItemDetail: React.FC = () => {
   // ─── Status helpers ───
   const aggregateStatus = item ? getEffectiveItemStatus(item) : undefined;
   const effectiveStatus = item ? (isOwner ? getEffectiveStatusForUserIdentity(item, currentUser) : aggregateStatus) : undefined;
+  // 跟进人反馈在数据层走 FOLLOWER_FEEDBACK，后端按 FEEDBACK_ITEM 兜底放行，
+  // 前端同样以 FEEDBACK_ITEM 判定，避免撤销 CHANGE_ITEM 后反馈框误消失。
   const canSubmitFeedback = Boolean(
     item &&
     (effectiveStatus === 'EXECUTING' || effectiveStatus === 'DELAYED') &&
-    ((isOwner && canPerform('FEEDBACK_ITEM')) || (isFollower && canPerform('CHANGE_ITEM')))
+    (isOwner || isFollower) &&
+    canPerform('FEEDBACK_ITEM')
   );
   const canApplyDelay = Boolean(item && isOwner && effectiveStatus === 'OVERDUE' && canPerform('DELAY_ITEM'));
   const feedbackPlaceholder = isFollower ? '在此输入给责任人的反馈意见...' : '在此输入您的反馈或进展说明...';
@@ -1025,7 +1029,7 @@ const ItemDetail: React.FC = () => {
                         <span className="text-xs text-slate-400 shrink-0">进度 {st.progress ?? 0}%</span>
                       </div>
                       <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-slate-500">
-                        <span>计划完成：<b className="text-slate-700 font-medium">{formatDate(st.plannedCompletionDate || st.deadline)}</b></span>
+                        <span>计划完成：<b className="text-slate-700 font-medium">{formatDate(st.plannedCompletionDate || st.requiredCompletionDate || st.deadline)}</b></span>
                         {st.requiredCompletionDate && <span>要求完成：<b className="text-slate-700 font-medium">{formatDate(st.requiredCompletionDate)}</b></span>}
                         {st.actualCompletionDate && <span>实际完成：<b className="text-slate-700 font-medium">{formatDate(st.actualCompletionDate)}</b></span>}
                       </div>
@@ -1126,7 +1130,7 @@ const ItemDetail: React.FC = () => {
                       <span className="text-xs font-medium text-slate-400">{formatDateTime(node.timestamp)}</span>
                     </div>
                     <div className="bg-slate-50/50 rounded-2xl p-4 border border-slate-50">
-                      <p className="text-sm text-slate-700 leading-relaxed">{node.content}</p>
+                      <p className="text-sm text-slate-700 leading-relaxed">{formatUrgeTimelineContent(node.content)}</p>
                       {node.attachments?.map((att, i) => (
                         <div key={i} className="mt-2 inline-flex items-center gap-2 bg-white px-2 py-1 rounded-lg text-xs text-blue-600 border border-blue-100">
                           <FileText className="w-3 h-3" />
@@ -1360,20 +1364,19 @@ const ItemDetail: React.FC = () => {
             <label className="block text-sm font-medium text-slate-700 mb-2">催办对象 <span className="text-red-500">*</span></label>
             <div className="border border-slate-200 rounded-xl p-4 max-h-48 overflow-y-auto space-y-2">
               <label className="flex items-center gap-2 text-sm font-bold text-blue-600 pb-2 border-b border-slate-100">
-                <input type="checkbox" checked={urgeTargets.length === (item.ownerNames?.length || 1)} onChange={() => {
-                  const all = (item.ownerNames || [item.ownerName]).filter(Boolean).map(n => ({ id: activeUsers.find(u => u.name === n)?.id || n, name: n }));
-                  setUrgeTargets(urgeTargets.length === all.length ? [] : all);
+                <input type="checkbox" checked={urgeTargets.length === urgeRecipientCandidates.length} onChange={() => {
+                  setUrgeTargets(urgeTargets.length === urgeRecipientCandidates.length ? [] : urgeRecipientCandidates);
                 }} className="w-4 h-4 text-blue-600 rounded" />
                 全选
               </label>
-              {(item.ownerNames?.length ? item.ownerNames : item.ownerName ? [item.ownerName] : []).map(name => {
-                const u = activeUsers.find(u => u.name === name);
+              {urgeRecipientCandidates.map(target => {
+                const u = activeUsers.find(u => u.id === target.id);
                 return (
-                  <label key={name} className="flex items-center gap-2 text-sm cursor-pointer">
-                    <input type="checkbox" checked={urgeTargets.some(t => t.name === name)} onChange={() => {
-                      setUrgeTargets(prev => prev.some(t => t.name === name) ? prev.filter(t => t.name !== name) : [...prev, { id: u?.id || name, name }]);
+                  <label key={target.id} className="flex items-center gap-2 text-sm cursor-pointer">
+                    <input type="checkbox" checked={urgeTargets.some(t => t.id === target.id)} onChange={() => {
+                      setUrgeTargets(prev => prev.some(t => t.id === target.id) ? prev.filter(t => t.id !== target.id) : [...prev, target]);
                     }} className="w-4 h-4 text-orange-500 rounded" />
-                    {name} {u?.deptId ? `（${u.role}）` : ''}
+                    {target.name} {u?.deptId ? `（${u.role}）` : ''}
                   </label>
                 );
               })}

@@ -11,6 +11,7 @@ import {
   compareItemsByRaiseDateDesc,
   formatDate,
   getEffectiveItemStatus,
+  getEffectiveStatusForUserIdentity,
   getItemStatusLabel,
   getItemStatusStyle,
   getUserSubTaskForIdentity,
@@ -27,6 +28,7 @@ import { mapRoleIdentityToUserRole } from '../../../store/role-access';
 import { getActionBarMode } from './action-bar-mode';
 import { getWorkbenchRowActionVisibility } from './task-list-actions';
 import { buildOwnerWorkbenchTaskListItems } from '../../../lib/owner-workbench';
+import { buildMyItemsScope } from '../../MyItems/my-items-scope';
 import { paginateTaskListItems, TASK_LIST_PAGE_SIZE_OPTIONS } from './task-list-pagination';
 
 export const TaskList: React.FC = () => {
@@ -37,8 +39,16 @@ export const TaskList: React.FC = () => {
   const [displayMode, setDisplayMode] = useState<'parent' | 'parentAndSubtasks'>('parent');
 
   const visibleItems = filterVisibleItems({ items, currentUser, orgUsers, roles, departments });
+  // owner 模式下，纯跟进人（如 r2 督办跟进人，虽具备 SIGN_ITEM/FEEDBACK_ITEM 能力）
+  // 的「我的待办任务」须纳入其作为跟进人的事项，与首页卡片口径（item 模式 + isFollower）
+  // 及《我的督办》个人页保持一致，避免「卡片有 9 条、列表 0 条」的错位。
+  // 纯责任人保持原 buildOwnerWorkbenchTaskListItems 口径不变。
+  const effectiveUser = orgUsers.find(u => u.id === currentUser.id) || currentUser;
+  const isFollower = mapRoleIdentityToUserRole(effectiveUser) === 'FOLLOWER';
   const scopedItems = mode === 'owner'
-    ? buildOwnerWorkbenchTaskListItems(visibleItems, currentUser)
+    ? (isFollower
+        ? buildMyItemsScope(visibleItems, currentUser).todoItems
+        : buildOwnerWorkbenchTaskListItems(visibleItems, currentUser))
     : visibleItems;
 
   const filteredItems = scopedItems.filter(item => {
@@ -80,9 +90,14 @@ export const TaskList: React.FC = () => {
     }
   }, [page, pagination.currentPage]);
 
-  // 签收时是否需要填写计划完成日期：只看 plannedCompletionDate 是否为空。
-  // 不再把 requiredCompletionDate 算作已填——签收必须写入 plannedCompletionDate。
+  // 签收时的计划完成日期来源：有要求完成日期时直接按要求日期签收（后端同样口径，且不允许责任人覆盖），
+  // 仅在完全没有要求完成日期时才要求责任人补填计划完成日期。
+  const getRequiredCompletionDateForSign = (item: SupervisionItem) => {
+    const subTask = getUserSubTaskForIdentity(item, currentUser);
+    return subTask?.requiredCompletionDate || item.requiredCompletionDate || '';
+  };
   const requiresPlannedDateOnSign = (item: SupervisionItem) => {
+    if (getRequiredCompletionDateForSign(item)) return false;
     const subTask = getUserSubTaskForIdentity(item, currentUser);
     if (subTask) return !subTask.plannedCompletionDate;
     return !item.plannedCompletionDate;
@@ -94,11 +109,13 @@ export const TaskList: React.FC = () => {
     setSignPlannedDate('');
   };
 
-  const handleSign = async (plannedDate?: string) => {
+  const handleSign = async (plannedDate?: string, options?: { useRequiredDate?: boolean }) => {
     if (!signTargetItem) return;
     const target = signTargetItem;
     const normalizedPlannedDate = plannedDate ? normalizeManualDateInput(plannedDate) : undefined;
-    if (normalizedPlannedDate) {
+    // 直接按跟进人下发的要求完成日期签收时不做"不早于今天"拦截：该日期是既定截止依据，
+    // 超期未签收的场景仍应允许签收（后端签收同样直接采用要求日期，无此校验）。
+    if (normalizedPlannedDate && !options?.useRequiredDate) {
       if (!isValidManualDateInput(normalizedPlannedDate)) {
         showToast('计划完成日期请按年/月/日格式输入，例如：2026/06/03', 'warning');
         return;
@@ -157,7 +174,8 @@ export const TaskList: React.FC = () => {
       return;
     }
     setSignTargetItem(item);
-    handleSign();
+    // 有要求完成日期：直接按要求日期签收，无需责任人再填计划完成日期
+    handleSign(getRequiredCompletionDateForSign(item) || undefined, { useRequiredDate: true });
   };
 
   const handleFeedbackSubmit = () => {
@@ -350,7 +368,11 @@ export const TaskList: React.FC = () => {
           </thead>
           <tbody className="divide-y divide-slate-50">
             {pagination.rows.map((item, index) => {
-              const effectiveStatus = getEffectiveItemStatus(item);
+              // 工作台责任人视角必须展示当前责任人的子任务状态；否则多责任人中
+              // 其他人的签收/超期会通过父级聚合状态覆盖本人「待签收」状态。
+              const effectiveStatus = isItemOwnerForUser(item, currentUser)
+                ? getEffectiveStatusForUserIdentity(item, currentUser)
+                : getEffectiveItemStatus(item);
               const subTasks = item.subTasks || [];
               const hasChildren = subTasks.length > 1;
               const showChildren = displayMode === 'parentAndSubtasks' && hasChildren;

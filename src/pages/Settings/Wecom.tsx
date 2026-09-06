@@ -23,6 +23,9 @@ const WecomSettings: React.FC = () => {
     corpid: 'ww1234567890abcdef',
     agentId: '1000001',
     secret: '',
+    contactSecret: '',
+    syncMode: 'legacy' as 'legacy' | 'list_id',
+    privateInfoEnabled: false,
     token: 'abc123token',
     encodingAesKey: '',
     callbackUrl: 'https://duban.example.com/api/wecom/callback',
@@ -45,6 +48,9 @@ const WecomSettings: React.FC = () => {
           corpid: rules.wecomCorpId || current.corpid,
           agentId: rules.wecomAgentId || current.agentId,
           secret: rules.wecomCorpSecret || '',
+          contactSecret: rules.wecomContactSecret || '',
+          syncMode: rules.wecomSyncMode === 'list_id' ? 'list_id' : 'legacy',
+          privateInfoEnabled: Boolean(rules.wecomPrivateInfoEnabled),
           token: rules.wecomToken || current.token,
           encodingAesKey: rules.wecomEncodingAesKey || current.encodingAesKey,
           callbackUrl: rules.wecomCallbackUrl || current.callbackUrl,
@@ -63,6 +69,9 @@ const WecomSettings: React.FC = () => {
     wecomCorpId: config.corpid.trim(),
     wecomAgentId: config.agentId.trim(),
     wecomCorpSecret: config.secret.trim(),
+    wecomContactSecret: config.contactSecret.trim(),
+    wecomSyncMode: config.syncMode,
+    wecomPrivateInfoEnabled: config.privateInfoEnabled,
     wecomToken: config.token.trim(),
     wecomEncodingAesKey: config.encodingAesKey.trim(),
     wecomCallbackUrl: config.callbackUrl.trim(),
@@ -84,7 +93,11 @@ const WecomSettings: React.FC = () => {
         action: '保存企业微信配置',
         module: '企业微信配置'
       });
-      setConfig((current) => ({ ...current, secret: current.secret ? SECRET_MASK : '' }));
+      setConfig((current) => ({
+        ...current,
+        secret: current.secret ? SECRET_MASK : '',
+        contactSecret: current.contactSecret ? SECRET_MASK : '',
+      }));
       showToast('企业微信配置已保存', 'success');
     } catch (error) {
       const message = error instanceof Error ? error.message : '企业微信配置保存失败';
@@ -227,6 +240,39 @@ const WecomSettings: React.FC = () => {
               </div>
             </div>
             <div>
+              <label className="block text-xs font-bold text-slate-500 uppercase mb-1.5">通讯录同步 Secret</label>
+              <div className="relative">
+                <input
+                  type={showSecret ? 'text' : 'password'}
+                  className="w-full bg-slate-50 border border-slate-100 rounded-xl py-3 px-4 pr-12 text-sm focus:ring-2 focus:ring-blue-500 transition-all outline-none"
+                  value={config.contactSecret}
+                  onChange={(e) => setConfig({ ...config, contactSecret: e.target.value })}
+                  placeholder="企业微信管理后台 → 管理工具 → 通讯录同步 的 Secret"
+                  autoComplete="new-password"
+                  maxLength={512}
+                />
+                <button
+                  onClick={() => setShowSecret(!showSecret)}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 transition-colors"
+                >
+                  {showSecret ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                </button>
+              </div>
+              <p className="text-[10px] text-slate-400 mt-1">仅用于「成员ID列表」接口枚举通讯录成员；不配置则同步走兼容链路</p>
+            </div>
+            <div>
+              <label className="block text-xs font-bold text-slate-500 uppercase mb-1.5">通讯录同步链路</label>
+              <select
+                className="w-full bg-slate-50 border border-slate-100 rounded-xl py-3 px-4 text-sm focus:ring-2 focus:ring-blue-500 transition-all outline-none"
+                value={config.syncMode}
+                onChange={(e) => setConfig({ ...config, syncMode: e.target.value as 'legacy' | 'list_id' })}
+              >
+                <option value="legacy">兼容模式（user/list 一次拉齐，含手机/邮箱/工号）</option>
+                <option value="list_id">官方推荐（list_id 枚举 + user/get 逐人读取）</option>
+              </select>
+              <p className="text-[10px] text-slate-400 mt-1">官方推荐链路需上方「通讯录同步 Secret」；新应用读取成员拿不到手机/邮箱/工号，工号关联依赖企微后台把工号配进成员扩展属性（名称建议「工号」）</p>
+            </div>
+            <div>
               <label className="block text-xs font-bold text-slate-500 uppercase mb-1.5">Token</label>
               <input 
                 type="text"
@@ -254,13 +300,29 @@ const WecomSettings: React.FC = () => {
           <div className="space-y-5">
             <div>
               <label className="block text-xs font-bold text-slate-500 uppercase mb-1.5">回调 URL</label>
-              <input 
+              <input
                 type="text"
                 className="w-full bg-slate-50 border border-slate-100 rounded-xl py-3 px-4 text-sm focus:ring-2 focus:ring-blue-500 transition-all outline-none"
                 value={config.callbackUrl}
                 onChange={(e) => setConfig({ ...config, callbackUrl: e.target.value })}
               />
               <p className="text-[10px] text-slate-400 mt-1">企业微信消息与事件回调地址，需在企业微信管理后台配置</p>
+            </div>
+            <div className="pt-1">
+              <label className="flex items-start gap-3 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  className="mt-0.5 w-4 h-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+                  checked={config.privateInfoEnabled}
+                  onChange={(e) => setConfig({ ...config, privateInfoEnabled: e.target.checked })}
+                />
+                <span>
+                  <span className="block text-sm font-medium text-slate-700">移动端免登申请敏感信息授权</span>
+                  <span className="block text-xs text-slate-400 mt-0.5">
+                    开启后免登改为 snsapi_privateinfo 授权（员工需在弹窗中同意），系统据此自动补全账号缺失的手机号/邮箱；需同时在企微后台应用详情中勾选敏感信息（手机/邮箱）。关闭则保持静默免登
+                  </span>
+                </span>
+              </label>
             </div>
             <div className="pt-2">
               <button 

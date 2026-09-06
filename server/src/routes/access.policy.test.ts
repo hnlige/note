@@ -370,7 +370,7 @@ test('filterItemsByAccess supports self and all descendant subordinates owner sc
   assert.deepEqual(visible.map((item) => item.id), ['i1', 'i2', 'i3', 'i5']);
 });
 
-test('filterItemsByAccess limits department managers to current department users by default', () => {
+test('filterItemsByAccess includes current department users and reporting subordinates for department managers', () => {
   const visible = filterItemsByAccess(
     [
       { id: 'i1', ownerId: '2', followerId: '4' },
@@ -385,7 +385,7 @@ test('filterItemsByAccess limits department managers to current department users
     },
   );
 
-  assert.deepEqual(visible.map((item) => item.id), ['i1', 'i2']);
+  assert.deepEqual(visible.map((item) => item.id), ['i1', 'i2', 'i4']);
 });
 
 test('filterItemsByAccess includes child department users for department managers', () => {
@@ -411,6 +411,30 @@ test('filterItemsByAccess includes child department users for department manager
   );
 
   assert.deepEqual(visible.map((item) => item.id), ['i-parent-dept', 'i-child-dept']);
+});
+
+test('filterItemsByAccess includes cross-department reporting subordinates for department managers', () => {
+  const visible = filterItemsByAccess(
+    [
+      { id: 'i-reporting-owner', ownerId: '9', followerId: '4' },
+      { id: 'i-reporting-follower', ownerId: '4', followerId: '9' },
+      { id: 'i-unrelated', ownerId: '4', followerId: '4' },
+    ],
+    {
+      currentUser: { ...users[0], roleId: 'r-dept' },
+      currentRole: roles[5],
+      users: [
+        ...users,
+        { id: '9', role: '责任人', roleId: 'r-self', orgId: 'org-c', deptId: 'dept-other', supervisorId: '6', status: 'ACTIVE' },
+      ],
+      departments: [
+        { id: 'dept-1', parentId: null },
+        { id: 'dept-other', parentId: null },
+      ],
+    },
+  );
+
+  assert.deepEqual(visible.map((item) => item.id), ['i-reporting-owner', 'i-reporting-follower']);
 });
 
 test('filterItemsByAccess uses split owner custom users for department owner scope', () => {

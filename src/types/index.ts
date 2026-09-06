@@ -32,6 +32,8 @@ export interface Attachment {
   id: string;
   name: string;
   url: string;
+  /** COS 对象键，仅服务端使用以生成短期签名下载地址。 */
+  storageKey?: string;
   size: string;
   type: string;
   uploadedAt?: string;
@@ -82,6 +84,13 @@ export interface SubTask {
   followerApprovedBy?: string;
   /** 跟进人上级终审通过人姓名；空表示尚待上级终审 */
   finalApprovedBy?: string;
+  /**
+   * 后端基于【完整时间轴】算出的责任人签收标记，供工作台五态指标直接使用。
+   * 用于消除列表接口对时间轴「最近 5 条」截断的依赖（避免已反馈仍被算作未反馈、跨刷新计数不稳定）。
+   */
+  signed?: boolean;
+  /** 后端基于完整时间轴算出的责任人是否已提交反馈（FEEDBACK）标记，语义同 signed。 */
+  feedbackGiven?: boolean;
 }
 
 export interface SupervisionItem {
@@ -144,6 +153,11 @@ export interface SupervisionItem {
   signedOwnerCount?: number;
   /** 关联责任人总数 */
   totalOwnerCount?: number;
+  /**
+   * 后端基于【完整时间轴】算出的事项级「是否已有反馈」标记（含 lastFeedbackDate 与 FEEDBACK/FOLLOWER_FEEDBACK 节点）。
+   * 供工作台「未反馈」指标直接使用，消除对列表截断时间轴的依赖。
+   */
+  hasFeedback?: boolean;
 }
 
 export interface LightRecord {
@@ -317,6 +331,7 @@ export interface OperationLog {
   userName: string;
   action: string;
   module: string;
+  detail?: string;
   timestamp: string;
   ip: string;
 }
@@ -338,6 +353,9 @@ export interface AsyncTask {
   startTime: string;
   type: 'IMPORT' | 'EXPORT';
   result?: string;
+  /** 服务端 async_tasks.module，如「组织架构」；本地构造的任务可能没有 */
+  module?: string;
+  endTime?: string;
 }
 
 export interface AuditRecord {

@@ -173,6 +173,11 @@ server {
     location ~ /\. {
         deny all;
     }
+
+    # 安全：禁止下载 sourcemap，防止前端源码还原
+    location ~* \.map$ {
+        deny all;
+    }
 }
 NGINX
 

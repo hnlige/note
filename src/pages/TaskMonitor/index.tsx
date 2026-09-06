@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { MainLayout } from '../../components/Layout/MainLayout';
 import { useStore } from '../../store/useStore';
 import {
@@ -16,10 +16,24 @@ import {
 } from 'lucide-react';
 import { motion } from 'framer-motion';
 
+const TASK_REFRESH_INTERVAL_MS = 8000;
+
 const TaskMonitor: React.FC = () => {
-  const { asyncTasks, updateAsyncTask } = useStore();
+  const { asyncTasks, updateAsyncTask, fetchAsyncTasks } = useStore();
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedTask, setSelectedTask] = useState<(typeof asyncTasks)[number] | null>(null);
+  // 定时器仅用于轮询刷新，任务数据以服务端 async_tasks 表为准
+  const refreshTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  useEffect(() => {
+    fetchAsyncTasks();
+    refreshTimerRef.current = setInterval(() => {
+      fetchAsyncTasks();
+    }, TASK_REFRESH_INTERVAL_MS);
+    return () => {
+      if (refreshTimerRef.current) clearInterval(refreshTimerRef.current);
+    };
+  }, [fetchAsyncTasks]);
 
   const filteredTasks = useMemo(() => {
     if (!searchTerm) return asyncTasks;
@@ -117,7 +131,7 @@ const TaskMonitor: React.FC = () => {
           <thead>
             <tr className="bg-slate-50/50 text-slate-500 text-[10px] font-bold uppercase tracking-wider">
               <th className="px-6 py-4">任务名称</th>
-              <th className="px-6 py-4">类型</th>
+              <th className="px-6 py-4">模块</th>
               <th className="px-6 py-4">进度</th>
               <th className="px-6 py-4">状态</th>
               <th className="px-6 py-4">开始时间</th>
@@ -136,10 +150,8 @@ const TaskMonitor: React.FC = () => {
                   <p className="text-sm font-bold text-slate-900">{task.name}</p>
                 </td>
                 <td className="px-6 py-4">
-                  <span className={`text-xs font-bold px-2 py-0.5 rounded ${
-                    task.type === 'IMPORT' ? 'bg-blue-50 text-blue-600' : 'bg-purple-50 text-purple-600'
-                  }`}>
-                    {task.type === 'IMPORT' ? '导入' : '导出'}
+                  <span className="text-xs font-bold px-2 py-0.5 rounded bg-purple-50 text-purple-600">
+                    {task.module || (task.type === 'IMPORT' ? '导入' : '导出')}
                   </span>
                 </td>
                 <td className="px-6 py-4">
@@ -234,15 +246,16 @@ const TaskMonitor: React.FC = () => {
             <div className="p-8 space-y-4">
               {[
                 ['任务名称', selectedTask.name],
-                ['任务类型', selectedTask.type === 'IMPORT' ? '导入' : '导出'],
+                ['所属模块', selectedTask.module || (selectedTask.type === 'IMPORT' ? '导入' : '导出')],
                 ['状态', getStatusText(selectedTask.status)],
                 ['进度', `${selectedTask.progress}%`],
                 ['开始时间', selectedTask.startTime],
+                ['结束时间', selectedTask.endTime || '—'],
                 ['结果信息', selectedTask.result || '暂无结果'],
               ].map(([label, value]) => (
                 <div key={label} className="flex items-center justify-between gap-6 border-b border-slate-50 pb-3">
                   <span className="text-xs font-bold text-slate-400 uppercase">{label}</span>
-                  <span className="text-sm font-semibold text-slate-700 text-right">{value}</span>
+                  <span className="text-sm font-semibold text-slate-700 text-right break-words max-w-[70%]">{value}</span>
                 </div>
               ))}
             </div>

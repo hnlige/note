@@ -12,6 +12,9 @@ import {
 } from './module-authz';
 import { ensureNotificationIdentityColumns } from './notification.schema';
 import { filterItemsByAccess, type AccessItemLike } from './access.policy';
+// 事项 JSON 列（followerIds/ownerIds/subTasks 等）在线上库以 TEXT 存储，行级权限过滤前
+// 必须先做与详情/列表接口相同的规整与身份回填，否则跟进人匹配会失败（403 数据权限）。
+import { backfillItemUserIdentities, normalizeItemsJsonFields } from './items';
 import { eq, and, desc, sql, inArray, gte, lte, like } from 'drizzle-orm';
 import { createHash } from 'node:crypto';
 
@@ -24,6 +27,25 @@ export function normalizeUrgeContent(content: unknown): string {
   return typeof content === 'string' && content.trim().length > 0
     ? content.trim()
     : '请及时查看并反馈处理进展。';
+}
+
+/**
+ * `urge_records.idempotency_key` is varchar(64). Mobile clients send readable
+ * keys like `urge_<itemId>_<receiverId>_<ts>_<n>` (~94 chars); storing them as-is
+ * fails the INSERT in MySQL strict mode and the whole urge turns into a 500.
+ * Deterministically fold over-long keys into a 64-char hash so retries keep deduping.
+ */
+export function normalizeUrgeIdempotencyKey(key: string): string {
+  return key.length > 64 ? createHash('sha256').update(key).digest('hex') : key;
+}
+
+// 催办方式展示名：时间轴/消息里直接展示给用户，不能输出 SYSTEM 等英文枚举。
+export function describeUrgeMethod(method: string): string {
+  switch (method) {
+    case 'SYSTEM': return '站内推送';
+    case 'PHONE': return '电话催办';
+    default: return '消息通知';
+  }
 }
 
 /**
@@ -77,7 +99,42 @@ export interface UrgeTarget {
   status?: string | null;
 }
 
-// 收集事项下所有可被催办的责任人：优先展开子任务责任人；若无子任务责任人则回退到主责任人与跟进人。
+// 根级责任人 + 跟进人：无论事项是否有子任务责任人，都可被单条催办指定为接收人。
+// 前端催办抽屉以主责任人为接收人；若只在"无子任务责任人"时才放行，
+// 有子任务的事项催办主责任人会被 403 拦截（表现为"发起催办失败"）。
+function collectItemRootUrgeTargets(item: Record<string, any>): UrgeTarget[] {
+  const out: UrgeTarget[] = [];
+  const ownerIds = Array.isArray(item.ownerIds)
+    ? item.ownerIds
+    : item.ownerId
+      ? [item.ownerId]
+      : [];
+  const ownerNames = Array.isArray(item.ownerNames)
+    ? item.ownerNames
+    : item.ownerName
+      ? [item.ownerName]
+      : [];
+  ownerIds.forEach((id: string, idx: number) => {
+    if (id) out.push({ subTaskId: null, assigneeId: id, assigneeName: ownerNames[idx] ?? null, status: item.status ?? null });
+  });
+  const followerIds = Array.isArray(item.followerIds)
+    ? item.followerIds
+    : item.followerId
+      ? [item.followerId]
+      : [];
+  followerIds.forEach((id: string) => {
+    if (id) out.push({ subTaskId: null, assigneeId: id, assigneeName: null, status: item.status ?? null });
+  });
+  return out;
+}
+
+// 单条催办可指定的接收人：子任务责任人 + 根级责任人与跟进人的并集。
+export function collectSingleUrgeTargets(item: Record<string, any>): UrgeTarget[] {
+  const subTaskTargets = collectItemUrgeTargets(item).filter((t) => t.subTaskId);
+  return [...subTaskTargets, ...collectItemRootUrgeTargets(item)];
+}
+
+// 批量催办目标：优先展开子任务责任人；无子任务责任人时回退到主责任人与跟进人。
 export function collectItemUrgeTargets(item: Record<string, any>): UrgeTarget[] {
   const out: UrgeTarget[] = [];
   const subTasks = parseSubTasks(item);
@@ -92,27 +149,7 @@ export function collectItemUrgeTargets(item: Record<string, any>): UrgeTarget[] 
     }
   }
   if (out.length === 0) {
-    const ownerIds = Array.isArray(item.ownerIds)
-      ? item.ownerIds
-      : item.ownerId
-        ? [item.ownerId]
-        : [];
-    const ownerNames = Array.isArray(item.ownerNames)
-      ? item.ownerNames
-      : item.ownerName
-        ? [item.ownerName]
-        : [];
-    ownerIds.forEach((id: string, idx: number) => {
-      if (id) out.push({ subTaskId: null, assigneeId: id, assigneeName: ownerNames[idx] ?? null, status: item.status ?? null });
-    });
-    const followerIds = Array.isArray(item.followerIds)
-      ? item.followerIds
-      : item.followerId
-        ? [item.followerId]
-        : [];
-    followerIds.forEach((id: string) => {
-      if (id) out.push({ subTaskId: null, assigneeId: id, assigneeName: null, status: item.status ?? null });
-    });
+    out.push(...collectItemRootUrgeTargets(item));
   }
   return out;
 }
@@ -205,12 +242,14 @@ urgeRouter.post('/', async (req: AuthenticatedRequest, res: Response) => {
     }
     const [item] = await db.select().from(itemsTable).where(eq(itemsTable.id, itemId)).limit(1);
     if (!item) return res.status(404).json({ error: '催办事项不存在' });
-    if (filterItemsByAccess([item as AccessItemLike], accessContext).length === 0) {
+    const [normalizedItem] = normalizeItemsJsonFields(await backfillItemUserIdentities(db, [item as Record<string, any>]));
+    if (filterItemsByAccess([normalizedItem as AccessItemLike], accessContext).length === 0) {
       return res.status(403).json({ error: '当前事项不在您的数据权限范围内' });
     }
 
     // 服务端校验：接收人必须属于该事项（子任务责任人 / 主责任人 / 跟进人），不信任前端参数。
-    const targets = collectItemUrgeTargets(item as Record<string, any>);
+    // 单条催办按并集校验，前端催办抽屉指定的主责任人不会因子任务存在而被拦截。
+    const targets = collectSingleUrgeTargets(normalizedItem as Record<string, any>);
     const match = targets.find((t) =>
       t.assigneeId === receiverId && (subTaskId ? t.subTaskId === subTaskId : true),
     );
@@ -236,7 +275,9 @@ urgeRouter.post('/', async (req: AuthenticatedRequest, res: Response) => {
     const normalizedMethod = ['SYSTEM', 'MESSAGE', 'PHONE'].includes(method) ? method : 'MESSAGE';
 
     const recordId = clientId || uuid();
-    const effectiveIdempotencyKey = typeof idempotencyKey === 'string' && idempotencyKey ? idempotencyKey : uuid();
+    const effectiveIdempotencyKey = normalizeUrgeIdempotencyKey(
+      typeof idempotencyKey === 'string' && idempotencyKey ? idempotencyKey : uuid(),
+    );
     const record = buildUrgeRecord({
       recordId,
       itemId,
@@ -283,7 +324,7 @@ urgeRouter.post('/', async (req: AuthenticatedRequest, res: Response) => {
         itemId,
         type: 'URGE',
         user: identities.senderName || accessContext.currentUser.name,
-        content: `【催办】${normalizedContent} (${normalizedMethod})`,
+        content: `【催办】${normalizedContent}（${describeUrgeMethod(normalizedMethod)}）`,
         timestamp: now,
       } as never);
       await tx.insert(operationLogs).values({
@@ -325,7 +366,8 @@ urgeRouter.post('/batch', async (req: AuthenticatedRequest, res: Response) => {
     const requestKey = typeof req.body?.idempotencyKey === 'string' && req.body.idempotencyKey ? req.body.idempotencyKey : uuid();
 
     const items = await db.select().from(itemsTable).where(inArray(itemsTable.id, itemIds));
-    const accessibleItems = filterItemsByAccess(items as AccessItemLike[], accessContext);
+    const normalizedItems = normalizeItemsJsonFields(await backfillItemUserIdentities(db, items as Record<string, any>[]));
+    const accessibleItems = filterItemsByAccess(normalizedItems as AccessItemLike[], accessContext);
     if (accessibleItems.length === 0) return res.status(403).json({ error: '当前事项不在您的数据权限范围内' });
 
     const users = await db.select({ id: usersTable.id, name: usersTable.name, username: usersTable.username }).from(usersTable);
@@ -501,8 +543,10 @@ urgeRouter.get('/counts', async (req: AuthenticatedRequest, res: Response) => {
     if (itemIds.length === 0) return res.json({ byTarget: {}, byItem: {} });
 
     const { items: itemsTable } = await import('../db/schema');
+    const selectedItems = await db.select().from(itemsTable).where(inArray(itemsTable.id, itemIds));
+    const normalizedSelected = normalizeItemsJsonFields(await backfillItemUserIdentities(db, selectedItems as Record<string, any>[]));
     const accessibleItems = filterItemsByAccess(
-      (await db.select().from(itemsTable).where(inArray(itemsTable.id, itemIds))) as AccessItemLike[],
+      normalizedSelected as AccessItemLike[],
       accessContext,
     );
     const accessibleIds = new Set(accessibleItems.map((it) => it.id));

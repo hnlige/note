@@ -34,11 +34,11 @@ const EDITABLE_ITEM_FIELDS = new Set([
   'attachments',
   'timeline',
   'rejectReason',
+  'changeHistory',
 ]);
 
 const UNSUPPORTED_ITEM_UPDATE_FIELDS = new Set([
   'restartDate',
-  'changeHistory',
   'issuerId',
   'issuerName',
   'issuerAccount',
@@ -72,6 +72,17 @@ function normalizeDateValue(value: unknown): unknown {
   return new Date(value);
 }
 
+function sanitizeAttachmentMetadata(value: unknown): unknown {
+  if (!Array.isArray(value)) return value;
+  return value.map((attachment) => {
+    if (!attachment || typeof attachment !== 'object' || Array.isArray(attachment)) return attachment;
+    const record = attachment as Record<string, unknown>;
+    if (typeof record.storageKey !== 'string' || !record.storageKey) return attachment;
+    const { url: _signedUrl, ...persisted } = record;
+    return persisted;
+  });
+}
+
 export function getInvalidItemUpdateFields(payload: Record<string, unknown>): string[] {
   return Object.keys(payload).filter((field) => UNSUPPORTED_ITEM_UPDATE_FIELDS.has(field));
 }
@@ -97,6 +108,11 @@ export function sanitizeItemUpdates(payload: Record<string, unknown>, now = new 
     // meetingName → meetingSource (前端字段 → 后端数据库字段)
     if (field === 'meetingName' && value !== undefined) {
       updates['meetingSource'] = value;
+      return;
+    }
+
+    if (field === 'attachments') {
+      updates[field] = sanitizeAttachmentMetadata(value);
       return;
     }
 
@@ -221,11 +237,16 @@ export function normalizeFollowerSelection(
   };
 }
 
-function isFollowerFeedbackTimelineNode(node: unknown): boolean {
+export function isFollowerFeedbackTimelineNode(node: unknown): boolean {
   return typeof node === 'object' &&
     node !== null &&
     'type' in node &&
     (node as { type?: unknown }).type === 'FOLLOWER_FEEDBACK';
+}
+
+/** 跟进人反馈在数据层仍走 CHANGE_ITEM 兼容旧角色配置；用于权限兜底识别该语义。 */
+export function isFollowerFeedbackUpdatePayload(payload: Record<string, unknown>): boolean {
+  return isFollowerFeedbackTimelineNode(getLatestTimelineNode(payload.timeline));
 }
 
 function getLatestTimelineNode(value: unknown): unknown {
@@ -301,16 +322,19 @@ export function mapTimelineNodeToAction(node: unknown): string | null {
     case 'DELAY': return 'DELAY_ITEM';
     case 'RESTART': return 'RESTART_ITEM';
     case 'DISABLE': return 'DISABLE_ITEM';
+    case 'CHANGE': return 'CHANGE_ITEM';
     case 'CREATE': return 'CHANGE_ITEM';
     default: return null;
   }
 }
 
 // 普通字段编辑会落到 CHANGE_ITEM；这些字段已映射到各自专属动作，不应再触发 CHANGE_ITEM。
+// rejectReason 属于驳回（REJECT_ITEM）语义的一部分：MENU_MY_ITEMS 目录不含 CHANGE_ITEM，
+// 若让它触发普通编辑动作，跟进人/管理员在「我的督办」与移动端发起的驳回会被 403 拦截。
 const NON_GENERAL_FIELDS = new Set([
   'status', 'timeline', 'sharedWith', 'attachments', 'lastFeedbackDate', 'progress',
   'subTasks', 'deadline', 'plannedCompletionDate', 'deletedAt', 'deletedById',
-  'updatedAt', 'originalStatus',
+  'updatedAt', 'originalStatus', 'rejectReason',
 ]);
 
 const GENERAL_EDIT_FIELDS = new Set([

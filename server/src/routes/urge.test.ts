@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { asStringArray, buildBatchUrgeIdempotencyKey, getUrgeTargetIds, normalizeUrgeContent } from './urge';
+import { asStringArray, buildBatchUrgeIdempotencyKey, describeUrgeMethod, getUrgeTargetIds, normalizeUrgeContent } from './urge';
 
 test('normalizeUrgeContent falls back when content is missing', () => {
   assert.equal(normalizeUrgeContent(undefined), '请及时查看并反馈处理进展。');
@@ -31,4 +31,11 @@ test('buildBatchUrgeIdempotencyKey fits the database column and isolates each it
   assert.equal(itemOne.length, 64);
   assert.notEqual(itemOne, itemTwo);
   assert.equal(itemOne, buildBatchUrgeIdempotencyKey(requestKey, 'b2222222-2222-4222-8222-222222222222', 'c3333333-3333-4333-8333-333333333333', 'd4444444-4444-4444-8444-444444444444'));
+});
+
+test('describeUrgeMethod maps enums to Chinese labels', () => {
+  assert.equal(describeUrgeMethod('SYSTEM'), '站内推送');
+  assert.equal(describeUrgeMethod('MESSAGE'), '消息通知');
+  assert.equal(describeUrgeMethod('PHONE'), '电话催办');
+  assert.equal(describeUrgeMethod('UNKNOWN'), '消息通知');
 });

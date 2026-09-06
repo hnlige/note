@@ -2,93 +2,106 @@ import React, { useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useStore } from '../../store/useStore';
 import { hasAuthToken } from '../../lib/api';
+import { buildMobileHomeTabs } from '../../lib/mobile-home-metrics';
+import { shouldShowRecentActivity } from '../../lib/recent-activity-visibility';
+import { getMobileItemStatus, isItemRelatedToUser } from '../../lib/item-format';
 import { MobileLayout } from './Layout';
-import { 
-  ClipboardList, 
-  Clock, 
-  Sparkles, 
-  ChevronRight,
-  ShieldCheck,
-  Zap,
-  Flame
-} from 'lucide-react';
+import { ItemCard } from './components/ItemCard';
+import { Sparkles, Zap, ChevronRight, BellRing, Megaphone, ClipboardCheck } from 'lucide-react';
+import type { Message } from '../../types';
+
+/** 五个顶部标签的数字颜色（与 PC 工作台指标卡同色系） */
+const TAB_VALUE_COLORS: Record<string, string> = {
+  pendingOpen: 'text-blue-600',
+  overdue: 'text-red-500',
+  noFeedback: 'text-orange-500',
+  incomplete: 'text-purple-600',
+  completed: 'text-emerald-600',
+};
+
+/** 最近动态条目：由消息记录派生，点击跳转对应事项或消息中心 */
+interface RecentActivity {
+  key: string;
+  icon: 'urge' | 'todo' | 'notice';
+  title: string;
+  detail: string;
+  timestamp: string;
+  itemId?: string;
+}
+
+const parseItemIdFromLink = (link?: string): string | undefined => {
+  const match = link?.match(/\/items\/([^/?#]+)/);
+  return match?.[1];
+};
+
+const toRecentActivity = (msg: Message): RecentActivity => {
+  const type = msg.type === 'URGE' ? 'urge' : msg.type === 'TODO' ? 'todo' : 'notice';
+  return {
+    key: msg.id,
+    icon: type,
+    title: msg.title,
+    detail: msg.content,
+    timestamp: msg.timestamp,
+    itemId: parseItemIdFromLink(msg.link),
+  };
+};
 
 export const MobileHome: React.FC = () => {
   const navigate = useNavigate();
-  const { items, currentUser, syncItems } = useStore();
+  const { items, currentUser, roles, orgUsers, departments, messages, syncItems, syncMessages } = useStore();
 
   useEffect(() => {
-    // 1. 免登鉴权校验
     if (!hasAuthToken()) {
       window.location.replace('/m/login');
       return;
     }
-    
-    // 2. 刷新最新督办事项数据
     syncItems().catch((err) => console.error('Sync items error:', err));
-  }, [syncItems]);
+    syncMessages().catch((err) => console.error('Sync messages error:', err));
+  }, [syncItems, syncMessages]);
 
-  // 3. 统计指标计算 (待办数、超期数、跟进数)
-  const stats = useMemo(() => {
-    const now = new Date();
-    let todoCount = 0;
-    let overdueCount = 0;
-    let followingCount = 0;
+  // 首页顶部标签：与 PC 工作台五态指标同口径，所有角色标签集合一致
+  const tabs = useMemo(
+    () => buildMobileHomeTabs({ items, currentUser, orgUsers, roles, departments }),
+    [items, currentUser, orgUsers, roles, departments],
+  );
+  const incompleteCount = tabs.find(tab => tab.key === 'incomplete')?.value ?? 0;
 
-    for (const item of items) {
-      const isOwner = item.ownerId === currentUser.id || item.ownerIds?.includes(currentUser.id);
-      const isFollower = item.followerId === currentUser.id || item.followerIds?.includes(currentUser.id);
-
-      // 待办数：待签收或执行中，且用户为责任人
-      if (isOwner && (item.status === 'PENDING' || item.status === 'EXECUTING' || item.status === 'DELAYED')) {
-        todoCount++;
-      }
-
-      // 超期数：截止时间小于现在，且非已完成
-      if (item.deadline && new Date(item.deadline) < now && item.status !== 'COMPLETED' && item.status !== 'ARCHIVED') {
-        overdueCount++;
-      }
-
-      // 跟进数：当前用户是跟进人
-      if (isFollower) {
-        followingCount++;
-      }
-    }
-
-    return { todoCount, overdueCount, followingCount };
-  }, [items, currentUser]);
-
-  // 4. 今日/即将到期督办 (限制最多 5 条)
+  // 高频待办 Top5
   const todayTodos = useMemo(() => {
     const now = new Date();
     return items
       .filter(item => {
-        const isOwner = item.ownerId === currentUser.id || item.ownerIds?.includes(currentUser.id);
-        const isActive = item.status === 'PENDING' || item.status === 'EXECUTING' || item.status === 'DELAYED';
-        return isOwner && isActive;
+        const isRelated = isItemRelatedToUser(item, currentUser);
+        const status = getMobileItemStatus(item, currentUser);
+        const closed = ['COMPLETED', 'ARCHIVED', 'DISABLED', 'DELETED', 'NOT_SATISFIED'].includes(status);
+        return isRelated && !closed;
       })
       .map(item => {
-        const remainingDays = item.deadline 
+        const remainingDays = item.deadline
           ? Math.ceil((new Date(item.deadline).getTime() - now.getTime()) / (1000 * 60 * 60 * 24))
-          : 999;
+          : null;
         return { ...item, remainingDays };
       })
-      .sort((a, b) => a.remainingDays - b.remainingDays)
+      .sort((a, b) => (a.remainingDays ?? Infinity) - (b.remainingDays ?? Infinity))
       .slice(0, 5);
   }, [items, currentUser]);
 
-  const getStatusBadge = (status: string) => {
-    switch (status) {
-      case 'PENDING':
-        return <span className="px-2 py-0.5 text-[10px] font-bold text-amber-600 bg-amber-50 rounded-md">待签收</span>;
-      case 'EXECUTING':
-        return <span className="px-2 py-0.5 text-[10px] font-bold text-blue-600 bg-blue-50 rounded-md">执行中</span>;
-      case 'DELAYED':
-        return <span className="px-2 py-0.5 text-[10px] font-bold text-red-600 bg-red-50 rounded-md">已超期</span>;
-      default:
-        return <span className="px-2 py-0.5 text-[10px] font-bold text-slate-500 bg-slate-50 rounded-md">{status}</span>;
-    }
-  };
+  // 最近动态：最新 3 条消息（未读优先），点击跳对应事项。
+  // 超级管理员、督办责任人、督办跟进人、督办管理员、部门管理员不展示该模块。
+  const showRecentActivity = shouldShowRecentActivity(currentUser, roles);
+  const recentActivities = useMemo<RecentActivity[]>(
+    () =>
+      showRecentActivity
+        ? [...messages]
+            .sort((a, b) => {
+              if (a.read !== b.read) return a.read ? 1 : -1;
+              return new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime();
+            })
+            .slice(0, 3)
+            .map(toRecentActivity)
+        : [],
+    [messages, showRecentActivity],
+  );
 
   return (
     <MobileLayout title="督办门户">
@@ -99,104 +112,85 @@ export const MobileHome: React.FC = () => {
         </div>
         <div className="relative z-10">
           <div className="flex items-center gap-2 mb-2">
-            <Zap className="w-4 h-4 text-amber-300 fill-amber-300 animate-bounce" />
+            <Zap className="w-4 h-4 text-amber-300 fill-amber-300" />
             <span className="text-xs text-blue-100 font-bold tracking-wider uppercase">MOBILE PORTAL</span>
           </div>
           <h2 className="text-lg font-bold">您好，{currentUser.name}</h2>
-          <p className="text-xs text-blue-100 mt-1">今天有 {stats.todoCount} 个督办待办，请按时完成签收与反馈。</p>
+          <p className="text-xs text-blue-100 mt-1">今天有 {incompleteCount} 个督办待办，请按时完成签收与反馈。</p>
         </div>
       </div>
 
-      {/* 数据看板 */}
-      <div className="grid grid-cols-3 gap-3 mb-6">
-        <div className="bg-white p-4 rounded-2xl border border-slate-100 shadow-sm flex flex-col items-center text-center">
-          <span className="text-2xl font-black text-blue-600">{stats.todoCount}</span>
-          <span className="text-[10px] text-slate-400 font-bold mt-1 uppercase tracking-wider">我的待办</span>
-        </div>
-        <div className="bg-white p-4 rounded-2xl border border-slate-100 shadow-sm flex flex-col items-center text-center">
-          <span className="text-2xl font-black text-red-500">{stats.overdueCount}</span>
-          <span className="text-[10px] text-slate-400 font-bold mt-1 uppercase tracking-wider">超期预警</span>
-        </div>
-        <div className="bg-white p-4 rounded-2xl border border-slate-100 shadow-sm flex flex-col items-center text-center">
-          <span className="text-2xl font-black text-emerald-600">{stats.followingCount}</span>
-          <span className="text-[10px] text-slate-400 font-bold mt-1 uppercase tracking-wider">跟进事项</span>
-        </div>
+      {/* 顶部标签：待签收/已超期/未反馈/未完成/已完成（全角色统一，点击下钻待办中心同口径列表） */}
+      <div className="grid grid-cols-5 gap-2 mb-6">
+        {tabs.map(tab => (
+          <button
+            key={tab.key}
+            onClick={() => navigate('/m/todo', { state: { tab: tab.key } })}
+            className="bg-white p-3 rounded-2xl border border-slate-100 shadow-sm flex flex-col items-center text-center active:scale-95 transition-all"
+          >
+            <span className={`text-xl font-black ${TAB_VALUE_COLORS[tab.key] || 'text-slate-700'}`}>{tab.value}</span>
+            <span className="text-[10px] text-slate-400 font-bold mt-1 whitespace-nowrap">{tab.title}</span>
+          </button>
+        ))}
       </div>
 
-      {/* 快捷菜单 */}
+      {/* 最近动态：最新消息条目，点击跳对应事项或消息中心（五类管理/经办角色不展示） */}
+      {showRecentActivity && (
       <div className="mb-6">
-        <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-3">一期核心服务</h3>
-        <div className="bg-white rounded-2xl border border-slate-100 p-4 shadow-sm flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 bg-green-50 rounded-xl flex items-center justify-center text-green-600">
-              <ShieldCheck className="w-5 h-5" />
-            </div>
-            <div>
-              <h4 className="text-sm font-bold text-slate-800">企业微信通讯录已关联</h4>
-              <p className="text-[10px] text-slate-400 mt-0.5">免登访问与本地账号已完成映射</p>
-            </div>
-          </div>
-          <span className="text-[10px] text-green-600 bg-green-50 font-bold px-2 py-1 rounded-lg">运行中</span>
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider">最近动态</h3>
+          <button onClick={() => navigate('/m/messages')} className="text-[10px] text-blue-600 font-bold flex items-center gap-0.5">
+            全部消息 <ChevronRight className="w-3 h-3" />
+          </button>
         </div>
+        {recentActivities.length === 0 ? (
+          <div className="bg-white rounded-2xl border border-slate-100 p-6 text-center shadow-sm">
+            <p className="text-sm text-slate-400 font-medium">暂无新消息</p>
+          </div>
+        ) : (
+          <div className="bg-white rounded-2xl border border-slate-100 shadow-sm divide-y divide-slate-50">
+            {recentActivities.map(act => {
+              const Icon = act.icon === 'urge' ? BellRing : act.icon === 'todo' ? ClipboardCheck : Megaphone;
+              const iconColor = act.icon === 'urge' ? 'text-red-600 bg-red-50' : act.icon === 'todo' ? 'text-blue-600 bg-blue-50' : 'text-amber-600 bg-amber-50';
+              return (
+                <button
+                  key={act.key}
+                  onClick={() => navigate(act.itemId ? `/m/item/${act.itemId}` : '/m/messages')}
+                  className="w-full flex items-center gap-3 p-3 active:bg-slate-50 transition-colors text-left"
+                >
+                  <div className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 ${iconColor}`}>
+                    <Icon className="w-4 h-4" />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-bold text-slate-800 truncate">{act.title}</p>
+                    <p className="text-[11px] text-slate-400 truncate mt-0.5">{act.detail}</p>
+                  </div>
+                  <span className="text-[10px] text-slate-300 shrink-0">{act.timestamp.slice(5, 10)}</span>
+                </button>
+              );
+            })}
+          </div>
+        )}
       </div>
+      )}
 
-      {/* 高频待办事项列表 */}
+      {/* 高频待办事项列表（卡片可点击进详情） */}
       <div>
         <div className="flex items-center justify-between mb-3">
           <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider">高频待办事项</h3>
-          <span className="text-[10px] text-blue-600 font-bold flex items-center gap-0.5">查看全部 <ChevronRight className="w-3 h-3" /></span>
+          <button onClick={() => navigate('/m/todo')} className="text-[10px] text-blue-600 font-bold flex items-center gap-0.5">
+            查看全部 <ChevronRight className="w-3 h-3" />
+          </button>
         </div>
 
         {todayTodos.length === 0 ? (
           <div className="bg-white rounded-2xl border border-slate-100 p-8 text-center flex flex-col items-center justify-center shadow-sm">
-            <div className="w-12 h-12 bg-slate-50 rounded-full flex items-center justify-center text-slate-300 mb-3">
-              <ClipboardList className="w-6 h-6" />
-            </div>
             <p className="text-sm text-slate-400 font-medium">暂无督办待办，安心度过今天</p>
           </div>
         ) : (
           <div className="space-y-3">
-            {todayTodos.map(todo => (
-              <div 
-                key={todo.id} 
-                className="bg-white rounded-2xl border border-slate-100 p-4 shadow-sm relative overflow-hidden active:scale-[0.99] transition-all"
-              >
-                {/* 状态色条 */}
-                <div className={`absolute left-0 top-0 bottom-0 w-1 ${
-                  todo.status === 'DELAYED' || todo.remainingDays < 0
-                    ? 'bg-red-500' 
-                    : todo.status === 'PENDING' 
-                      ? 'bg-amber-500' 
-                      : 'bg-blue-500'
-                }`} />
-
-                <div className="flex items-start justify-between gap-4 pl-1">
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2 mb-1.5 flex-wrap">
-                      <span className="text-[10px] font-bold text-slate-400 uppercase">#{todo.serialNo}</span>
-                      {getStatusBadge(todo.status)}
-                    </div>
-                    <h4 className="text-sm font-bold text-slate-800 truncate">{todo.title}</h4>
-                    
-                    <div className="flex items-center gap-3 mt-3 text-[10px] text-slate-400 font-medium">
-                      <span className="flex items-center gap-1"><Clock className="w-3.5 h-3.5" /> 截止: {todo.deadline?.split(' ')[0] || '未设'}</span>
-                    </div>
-                  </div>
-
-                  <div className="flex flex-col items-end shrink-0">
-                    {todo.remainingDays < 0 ? (
-                      <div className="flex items-center gap-1 text-red-600 font-bold text-xs bg-red-50 px-2.5 py-1 rounded-xl">
-                        <Flame className="w-3.5 h-3.5 fill-red-500 animate-pulse" />
-                        <span>超期 {Math.abs(todo.remainingDays)} 天</span>
-                      </div>
-                    ) : todo.remainingDays === 0 ? (
-                      <span className="text-xs font-bold text-amber-600 bg-amber-50 px-2 py-1 rounded-lg">今天到期</span>
-                    ) : (
-                      <span className="text-xs font-bold text-slate-500 bg-slate-50 px-2 py-1 rounded-lg">剩 {todo.remainingDays} 天</span>
-                    )}
-                  </div>
-                </div>
-              </div>
+            {todayTodos.map(item => (
+              <ItemCard key={item.id} item={item} />
             ))}
           </div>
         )}

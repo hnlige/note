@@ -97,7 +97,33 @@ test('POST log values ignore forged identity, network, id, and timestamp fields'
     authUser: { id: 'auth-user', name: '会话用户' },
     currentUser: { id: 'auth-user' },
     body: { action: '测试操作' },
-  })?.userName, 'auth-user');
+  })?.userName, '会话用户');
+});
+
+test('POST log values generate a server id when the request does not provide one', async () => {
+  const { buildOperationLogValues } = await import('./logs');
+  const values = buildOperationLogValues({
+    body: { action: '测试操作' },
+    authUser: { id: 'auth-user' },
+    currentUser: { id: 'auth-user', name: '真实用户' },
+  });
+  assert.match(values?.id || '', /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
+});
+
+test('POST log values keep the authenticated identity when the access context is missing or mismatched', async () => {
+  const { buildOperationLogValues } = await import('./logs');
+  const authUser = { id: 'auth-user', name: '会话用户', username: 'session-user' } as const;
+
+  assert.equal(buildOperationLogValues({
+    body: { action: '测试操作' },
+    authUser,
+    currentUser: null,
+  })?.userName, '会话用户');
+  assert.equal(buildOperationLogValues({
+    body: { action: '测试操作' },
+    authUser,
+    currentUser: { id: 'different-user', name: '其他用户' },
+  })?.userName, '会话用户');
 });
 
 test('logs endpoint remains protected from unauthenticated and export-only writes', async () => {

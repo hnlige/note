@@ -111,6 +111,24 @@ test('getActionBarMode honors backend role config instead of the coarse user rol
   );
 });
 
+test('生产督办跟进人(r2)具备签收/反馈能力时应进入 owner 视图而非被回收站菜单码误判为 admin', () => {
+  // 生产 r2 配置：拥有 MENU_RECYCLE_BIN（可回收站）且具备 SIGN_ITEM/FEEDBACK_ITEM。
+  // 此前 MENU_RECYCLE_BIN 会被优先判定为 admin，导致「我的待办任务」缺失、责任人操作按钮丢失。
+  const r2Prod: Role = {
+    id: 'r2-prod',
+    name: '督办跟进人(生产)',
+    authCodes: ['MENU_WORKBENCH', 'MENU_MY_ITEMS', 'MENU_ITEMS', 'MENU_MONITORING', 'MENU_STATISTICS', 'MENU_MESSAGES', 'MENU_RECYCLE_BIN'],
+    dataScope: 'SELF',
+    followerDataScope: 'SELF',
+    allowedActions: ['READ', 'SEARCH', 'EXPORT', 'URGE_ITEM', 'SIGN_ITEM', 'FEEDBACK_ITEM'],
+  };
+
+  assert.equal(
+    getActionBarMode({ roleId: 'r2-prod', roleIds: ['r2-prod'] }, [r2Prod]),
+    'owner',
+  );
+});
+
 test('getActionBarControls exposes workbench export independently from action bar mode', () => {
   const user = { roleId: 'r-export', roleIds: ['r-export'] };
   assert.equal(getActionBarMode(user, roles), 'none');

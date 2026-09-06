@@ -12,6 +12,11 @@ export type ItemPageAuth =
   | 'MENU_MONITORING'
   | 'MENU_MESSAGES';
 
+export type ItemsListResponse = any[] | {
+  data: any[];
+  pagination: { page: number; pageSize: number; total: number; totalPages: number };
+};
+
 export function hasAuthToken(storage?: Pick<Storage, 'getItem'> | null): boolean {
   try {
     const authStorage = storage ?? (typeof window !== 'undefined' ? localStorage : null);
@@ -36,7 +41,7 @@ function getAuthHeaders(): Record<string, string> {
 }
 
 const IN_PROD = Boolean(import.meta.env?.PROD);
-const AUTH_ENTRY_URLS = new Set(['/auth/login', '/wecom/login']);
+const AUTH_ENTRY_URLS = new Set(['/auth/login', '/wecom/login', '/auth/logout']);
 const RENEWED_AUTH_TOKEN_HEADER = 'X-Duban-Auth-Token';
 
 /** token 失效（过期/签名不符等）：清掉死 token 并跳登录页，避免卡在"看起来已登录却做不了任何操作"的状态 */
@@ -88,6 +93,28 @@ async function request<T>(url: string, options?: RequestInit): Promise<T> {
   return res.json();
 }
 
+async function uploadBinary<T>(url: string, file: File, pageAuth?: ItemPageAuth): Promise<T> {
+  const res = await fetch(`${BASE_URL}${url}`, {
+    method: 'POST',
+    body: file,
+    headers: {
+      ...getAuthHeaders(),
+      'Content-Type': 'application/octet-stream',
+      'X-Duban-File-Name': encodeURIComponent(file.name),
+      'X-Duban-File-Type': file.type || 'application/octet-stream',
+      ...(pageAuth ? { 'X-Page-Auth': pageAuth } : {}),
+    },
+  });
+  persistRenewedAuthToken(res);
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: res.statusText }));
+    const error = new Error(err.error || `附件上传失败 (${res.status})`) as Error & { status?: number };
+    error.status = res.status;
+    throw error;
+  }
+  return res.json();
+}
+
 function withPageAuth(pageAuth?: ItemPageAuth): Pick<RequestInit, 'headers'> {
   return pageAuth ? { headers: { 'X-Page-Auth': pageAuth } } : {};
 }
@@ -110,11 +137,13 @@ export const api = {
         '/auth/change-password',
         { method: 'POST', body: JSON.stringify({ oldPassword, newPassword }) }
       ),
+    logout: () =>
+      request<{ success: boolean }>('/auth/logout', { method: 'POST' }),
   },
 
   // ─── Items ───
   items: {
-    list: (page = 1, pageSize = 200, pageAuth?: ItemPageAuth) => request<{ data: any[]; pagination: { page: number; pageSize: number; total: number; totalPages: number } }>(
+    list: (page = 1, pageSize = 200, pageAuth?: ItemPageAuth) => request<ItemsListResponse>(
       `/items?page=${page}&pageSize=${pageSize}`,
       withPageAuth(pageAuth),
     ),
@@ -134,9 +163,19 @@ export const api = {
       request(`/items/${id}`, { method: 'DELETE', ...withPageAuth(pageAuth) }),
   },
 
+  attachments: {
+    upload: (itemId: string, file: File, pageAuth?: ItemPageAuth) =>
+      uploadBinary<{ id: string; name: string; url: string; storageKey: string; size: string; type: string; uploadedAt: string }>(
+        `/attachments/items/${encodeURIComponent(itemId)}`,
+        file,
+        pageAuth,
+      ),
+  },
+
   // ─── Messages ───
   messages: {
-    list: () => request<any[]>('/messages'),
+    listPage: (page = 1, pageSize = 100) => request<{ data: any[]; pagination: { page: number; pageSize: number; total: number; totalPages: number } }>(`/messages?page=${page}&pageSize=${pageSize}`),
+    list: async () => (await api.messages.listPage()).data,
     markRead: (id: string) =>
       request(`/messages/${id}/read`, { method: 'PUT' }),
     create: (data: any) =>
@@ -148,7 +187,8 @@ export const api = {
   },
   // ─── Activities ───
   activities: {
-    list: () => request<any[]>('/activities'),
+    listPage: (page = 1, pageSize = 100) => request<{ data: any[]; pagination: { page: number; pageSize: number; total: number; totalPages: number } }>(`/activities?page=${page}&pageSize=${pageSize}`),
+    list: async () => (await api.activities.listPage()).data,
     create: (data: any) =>
       request('/activities', { method: 'POST', body: JSON.stringify(data) }),
   },
@@ -262,7 +302,8 @@ export const api = {
 
   // ─── Audit Records ───
   audit: {
-    list: () => request<any[]>('/audit'),
+    listPage: (page = 1, pageSize = 100) => request<{ data: any[]; pagination: { page: number; pageSize: number; total: number; totalPages: number } }>(`/audit?page=${page}&pageSize=${pageSize}`),
+    list: async () => (await api.audit.listPage()).data,
     create: (data: any) =>
       request('/audit', { method: 'POST', body: JSON.stringify(data) }),
     update: (id: string, data: any) =>
@@ -291,7 +332,8 @@ export const api = {
 
   // ─── Operation Log ───
   logs: {
-    list: (limit?: number) => request<any[]>(`/logs${limit ? `?limit=${limit}` : ''}`),
+    listPage: (page = 1, pageSize = 200) => request<{ data: any[]; pagination: { page: number; pageSize: number; total: number; totalPages: number } }>(`/logs?page=${page}&pageSize=${pageSize}`),
+    list: async (limit?: number) => (await api.logs.listPage(1, limit || 200)).data,
     create: (data: Pick<OperationLog, 'action' | 'module'> & { detail?: string }) =>
       request<{ success: true; log: OperationLog }>('/logs', { method: 'POST', body: JSON.stringify(data) }),
   },
@@ -303,7 +345,7 @@ export const api = {
     sync: () =>
       request<{ ok: boolean; message: string; taskId: string }>('/wecom/sync', { method: 'POST' }),
     getConfig: () =>
-      request<{ wecomCorpId: string; wecomAgentId: string }>('/wecom/config'),
+      request<{ wecomCorpId: string; wecomAgentId: string; wecomPrivateInfoEnabled: boolean }>('/wecom/config'),
   },
 
   // ─── 员工督办转交（仅超级管理员）───

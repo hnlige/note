@@ -131,15 +131,20 @@ export function validateGlobalRulesPayload(payload: unknown): ValidationResult {
     }
   }
 
-  for (const field of ['autoRemindEnabled', 'autoUrgeEnabled']) {
+  for (const field of ['autoRemindEnabled', 'autoUrgeEnabled', 'wecomPrivateInfoEnabled']) {
     if (payload[field] !== undefined && typeof payload[field] !== 'boolean') {
       return fail(`${field}必须为布尔值`);
     }
   }
 
+  if (payload.wecomSyncMode !== undefined && payload.wecomSyncMode !== 'legacy' && payload.wecomSyncMode !== 'list_id') {
+    return fail('企业微信同步模式必须为 legacy 或 list_id');
+  }
+
   const result = firstInvalid([
     validateStringField(payload, 'wecomCorpId', '企业ID', { max: 100 }),
     validateStringField(payload, 'wecomCorpSecret', '应用Secret', { max: 512 }),
+    validateStringField(payload, 'wecomContactSecret', '通讯录同步Secret', { max: 512 }),
     validateStringField(payload, 'wecomAgentId', '应用AgentId', { max: 50 }),
     validateStringField(payload, 'wecomToken', '回调Token', { max: 100 }),
     validateStringField(payload, 'wecomEncodingAesKey', 'EncodingAESKey', { max: 100 }),

@@ -38,16 +38,19 @@ function isClosedItem(item: SupervisionItem): boolean {
 }
 
 /**
- * 统计口径（黎处 2026-08-12 定义，按「责任人任务数」计数，接受卡片间重复计数）：
- * 1. 待签收  = 未签收的责任人数量（多责任人：逐子任务判断，存在任意责任人未签收即计该责任人 1）
- * 2. 已超期  = 子任务状态为 OVERDUE/DELAYED 的责任人数量
- * 3. 未反馈  = 已签收但本人无反馈的责任人数量（不含未签收责任人）
- * 4. 未完成  = 子任务状态非 COMPLETED 的责任人数量
- * 5. 已完成  = 子任务状态为 COMPLETED 的责任人数量
+ * 统计口径（黎处 2026-08-12 定义）：
+ * 1. 待签收  = 含「本人未签收」责任人任务的事项
+ * 2. 已超期  = 含「本人子任务 OVERDUE/DELAYED」的事项
+ * 3. 未反馈  = 含「本人已签收且无反馈」责任人任务的事项（不含未签收责任人）
+ * 4. 未完成  = 含「本人子任务非 COMPLETED」的事项
+ * 5. 已完成  = 含「本人子任务 COMPLETED」的事项
  *
- * 说明：每条督办按责任人拆成 N 个「责任人任务」，卡片数字为责任人任务计数，因此
- * 同一督办会同时出现在多张卡片中（可重复计数，符合需求）。点击卡片仍跳转事项列表
- * （?pendingOpen=1 等），下钻行为保持与现有查询一致。
+ * 口径要点：
+ * - 生产首页恒传 currentUser（纯责任人视角），按【事项】计数：同一事项给该用户分配了
+ *   多个子任务时也只计 1 条，故卡片数字 === 副标题「涉及 N 件督办」=== 下钻《督办事项》
+ *   列表的行数（一行一事项），三者完全一致。
+ * - 跨卡片重复仍保留：一件事项可同时命中「已超期」与「待签收」等多张卡片（不同卡片之间
+ *   可重复计数，符合需求），这只是「不同卡片」维度的重复，不是「同一卡片内」的重复。
  */
 
 /** 已签收的责任人姓名集合（来自 SIGN 时间轴节点 user） */
@@ -91,24 +94,36 @@ function getPersonTasks(item: SupervisionItem): PersonTask[] {
   if (subTasks.length > 0) {
     return subTasks.map(st => {
       const name = (st.assigneeName || '').trim();
+      // 优先采用后端基于【完整时间轴】算出的权威标记（signed/feedbackGiven），
+      // 不再依赖被列表接口 slice(-5) 截断的展示时间轴；仅在离线/旧缓存缺字段时回退到时间轴推导。
+      const stSigned = typeof st.signed === 'boolean'
+        ? st.signed
+        : (st.status !== 'PENDING' || (name ? signed.has(name) : false));
+      const stHasFeedback = typeof st.feedbackGiven === 'boolean'
+        ? st.feedbackGiven
+        : (name ? feedback.has(name) : false);
       return {
         assigneeId: st.assigneeId,
         name,
-        // 子任务一旦离开 PENDING，即已完成过本人签收；SIGN 时间轴仅作为旧数据兼容补充。
-        // 线上历史数据可能保留子任务状态却缺少对应 SIGN 节点，不能因此把执行中/超期/已完成重复算作待签收。
-        signed: st.status !== 'PENDING' || (name ? signed.has(name) : false),
-        hasFeedback: name ? feedback.has(name) : false,
+        signed: stSigned,
+        hasFeedback: stHasFeedback,
         status: st.status,
       };
     });
   }
 
   const name = (item.ownerName || (item.ownerNames && item.ownerNames[0]) || '').trim();
+  const itemSigned = item.signOffStatus === 'SIGNED'
+    ? true
+    : (name ? signed.has(name) : getItemSignOffStatus(item).status === 'SIGNED');
+  const itemHasFeedback = typeof item.hasFeedback === 'boolean'
+    ? item.hasFeedback
+    : hasFeedback(item);
   return [
     {
       name,
-      signed: name ? signed.has(name) : getItemSignOffStatus(item).status === 'SIGNED',
-      hasFeedback: hasFeedback(item),
+      signed: itemSigned,
+      hasFeedback: itemHasFeedback,
       status: getEffectiveItemStatus(item),
     },
   ];
@@ -142,18 +157,30 @@ function personPredicate(key: WorkbenchMetricKey, pt: PersonTask, item: Supervis
 /** 逐事项命中谓词（item 口径核心，领导/管理员/跟进人视角） */
 function itemPredicate(key: WorkbenchMetricKey, item: SupervisionItem): boolean {
   const effective = getEffectiveItemStatus(item);
+  // 优先采用后端下发的权威签收/反馈标记（基于完整时间轴），避免被截断的展示时间轴导致误判。
+  const signed = typeof item.signOffStatus === 'string'
+    ? item.signOffStatus === 'SIGNED'
+    : getItemSignOffStatus(item).status === 'SIGNED';
+  const itemHasFeedback = typeof item.hasFeedback === 'boolean'
+    ? item.hasFeedback
+    : hasFeedback(item);
   switch (key) {
     case 'pendingOpen':
-      return !isClosedItem(item) && getItemSignOffStatus(item).status !== 'SIGNED';
+      return !isClosedItem(item) && !signed;
     case 'overdue':
       return !isClosedItem(item) && (effective === 'OVERDUE' || effective === 'DELAYED');
     case 'noFeedback':
-      return !isClosedItem(item) && getItemSignOffStatus(item).status === 'SIGNED' && !hasFeedback(item);
+      return !isClosedItem(item) && signed && !itemHasFeedback;
     case 'incomplete':
       return effective !== 'COMPLETED' && item.status !== 'DELETED';
     case 'completed':
       return effective === 'COMPLETED';
   }
+}
+
+/** 统一事项级命中谓词（与 item 模式计数同口径，供移动端首页标签及其下钻列表复用） */
+export function isWorkbenchItemMetricMatch(key: WorkbenchMetricKey, item: SupervisionItem): boolean {
+  return itemPredicate(key, item);
 }
 
 /**
@@ -204,7 +231,10 @@ export function isUserWorkbenchItem(key: WorkbenchMetricKey, item: SupervisionIt
  * @param mode  'person'（默认，责任人任务数，用于纯责任人视角）/ 'item'（督办事项数，用于领导/管理员/跟进人视角）
  * @param currentUser person 模式下必传，用于只统计当前登录用户自己的责任人任务；item 模式下忽略
  *
- * person 模式：value=当前用户自己的责任人任务数，caption=`涉及 N 件督办`（N 为该卡命中的事项去重数）。
+ * person 模式（传入 currentUser，即生产首页场景）：value=命中该卡的【去重事项数】，
+ *   与该卡副标题「涉及 N 件督办」一致，也与下钻《督办事项》列表「一行一事项」的条数完全一致
+ *   （同一事项给当前用户分配多个子任务时只计 1 条，不再被灌高）。
+ * person 模式（未传 currentUser，仅历史/测试兼容）：value=责任人任务数（同一事项可计多次），保留旧语义。
  * item   模式：value=督办事项数（每块最多 1），caption=`督办事项`。
  */
 export function buildWorkbenchStatusMetrics(
@@ -238,9 +268,13 @@ export function buildWorkbenchStatusMetrics(
   for (const item of active) {
     const pts = currentUser ? filterMyPersonTasks(item, currentUser) : getPersonTasks(item);
     for (const def of METRIC_DEFS) {
-      const hit = pts.filter(pt => personPredicate(def.key, pt, item)).length;
-      if (hit > 0) {
-        acc[def.key].value += hit;
+      const matched = pts.filter(pt => personPredicate(def.key, pt, item));
+      if (matched.length > 0) {
+        // 传入 currentUser（生产首页场景）时，按「事项」计数：同一事项即便给该用户分配了多个
+        // 子任务，也只计为 1 条，与下钻《督办事项》列表「一行一事项」的条数完全一致，
+        // 根治「首页数字 > 下钻条数」的统计错位（贺诗然账号暴露的真实场景）。
+        // 未传 currentUser 时保留旧语义（按责任人任务数计数，向后兼容历史调用方）。
+        acc[def.key].value += currentUser ? 1 : matched.length;
         acc[def.key].itemIds.add(item.id);
       }
     }
@@ -262,13 +296,22 @@ export function buildWorkbenchStatusMetrics(
 /** 待签收下钻谓词（事项级，供列表 ?pendingOpen=1）：签收状态「未全部签收」。卡片数字按责任人计数，下钻列表仍按事项过滤。 */
 export function isWorkbenchPendingOpenItem(item: SupervisionItem): boolean {
   if (CLOSED_STATUSES.has(getEffectiveItemStatus(item))) return false;
-  return getItemSignOffStatus(item).status !== 'SIGNED';
+  const signed = typeof item.signOffStatus === 'string'
+    ? item.signOffStatus === 'SIGNED'
+    : getItemSignOffStatus(item).status === 'SIGNED';
+  return !signed;
 }
 
 /** 未反馈（事项级，供列表下钻 ?noFeedback=1）：全部签收且无反馈记录。 */
 export function isWorkbenchNoFeedbackItem(item: SupervisionItem): boolean {
   if (CLOSED_STATUSES.has(getEffectiveItemStatus(item))) return false;
-  return getItemSignOffStatus(item).status === 'SIGNED' && !hasFeedback(item);
+  const signed = typeof item.signOffStatus === 'string'
+    ? item.signOffStatus === 'SIGNED'
+    : getItemSignOffStatus(item).status === 'SIGNED';
+  const itemHasFeedback = typeof item.hasFeedback === 'boolean'
+    ? item.hasFeedback
+    : hasFeedback(item);
+  return signed && !itemHasFeedback;
 }
 
 /** 未完成（事项级，供列表下钻 ?incomplete=1）：有效状态非「已办结」。 */

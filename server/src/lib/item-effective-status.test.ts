@@ -5,6 +5,7 @@ import {
   aggregateSubTaskStatus,
   derivePersistedItemStatus,
   getEffectiveItemStatus,
+  resolveFinalApprovalStatus,
   shouldStartPendingItemAfterOwnerActivity,
 } from './item-effective-status';
 
@@ -102,5 +103,38 @@ test('有子任务时父事项通常按后端聚合，明确终态优先于聚�
       subTasks,
     }),
     'DISABLED',
+  );
+});
+
+test('终审办结状态：单责任人（无子任务）直接办结，不再聚合空数组回退待签收', () => {
+  assert.equal(resolveFinalApprovalStatus([]), 'COMPLETED');
+  // 仅剩已删除子任务同样视为无活动子任务
+  assert.equal(
+    resolveFinalApprovalStatus([{ assigneeId: 'owner-a', status: 'DELETED' }]),
+    'COMPLETED',
+  );
+});
+
+test('终审办结状态：有子任务时维持最差状态聚合，部分办结不推进父级', () => {
+  assert.equal(
+    resolveFinalApprovalStatus([
+      { assigneeId: 'owner-a', status: 'COMPLETED' },
+      { assigneeId: 'owner-b', status: 'PENDING' },
+    ]),
+    'PENDING',
+  );
+  assert.equal(
+    resolveFinalApprovalStatus([
+      { assigneeId: 'owner-a', status: 'COMPLETED' },
+      { assigneeId: 'owner-b', status: 'COMPLETED' },
+    ]),
+    'COMPLETED',
+  );
+  assert.equal(
+    resolveFinalApprovalStatus([
+      { assigneeId: 'owner-a', status: 'COMPLETED' },
+      { assigneeId: 'owner-b', status: 'REVIEWING' },
+    ]),
+    'REVIEWING',
   );
 });

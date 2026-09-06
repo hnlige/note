@@ -79,6 +79,25 @@ test('validateGlobalRulesPayload validates numeric ranges and callback URL', () 
   });
 });
 
+test('validateGlobalRulesPayload validates wecom contact chain fields', () => {
+  assert.equal(validateGlobalRulesPayload({ wecomContactSecret: 's'.repeat(512) }).valid, true);
+  assert.deepEqual(validateGlobalRulesPayload({ wecomContactSecret: 's'.repeat(513) }), {
+    valid: false,
+    error: '通讯录同步Secret不能超过512个字符',
+  });
+  assert.equal(validateGlobalRulesPayload({ wecomSyncMode: 'list_id' }).valid, true);
+  assert.equal(validateGlobalRulesPayload({ wecomSyncMode: 'legacy' }).valid, true);
+  assert.deepEqual(validateGlobalRulesPayload({ wecomSyncMode: 'other' }), {
+    valid: false,
+    error: '企业微信同步模式必须为 legacy 或 list_id',
+  });
+  assert.equal(validateGlobalRulesPayload({ wecomPrivateInfoEnabled: true }).valid, true);
+  assert.deepEqual(validateGlobalRulesPayload({ wecomPrivateInfoEnabled: 'yes' }), {
+    valid: false,
+    error: 'wecomPrivateInfoEnabled必须为布尔值',
+  });
+});
+
 test('validateWecomVerifyPayload requires enterprise callback verification inputs', () => {
   assert.deepEqual(validateWecomVerifyPayload({ wecomToken: 'token', wecomEncodingAesKey: 'short', wecomCallbackUrl: 'https://example.com' }), {
     valid: false,

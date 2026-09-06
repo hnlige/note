@@ -43,11 +43,12 @@ const schemaColumns: readonly ColumnSpec[] = [
   { tableName: 'items', columnName: 'original_status', definition: 'varchar(20) NULL' },
   { tableName: 'items', columnName: 'deleted_at', definition: 'datetime NULL' },
   { tableName: 'items', columnName: 'deleted_by_id', definition: 'varchar(36) NULL' },
+  { tableName: 'items', columnName: 'change_history', definition: 'json NULL' },
   { tableName: 'timeline_nodes', columnName: 'attachments', definition: 'text NULL' },
   { tableName: 'timeline_nodes', columnName: 'actor_user_id', definition: 'varchar(36) NULL' },
   { tableName: 'urge_records', columnName: 'content', definition: 'text NULL' },
   { tableName: 'urge_records', columnName: 'batch_id', definition: 'varchar(36) NULL' },
-  { tableName: 'urge_records', columnName: 'sub_task_id', definition: 'varchar(36) NULL' },
+  { tableName: 'urge_records', columnName: 'sub_task_id', definition: 'varchar(128) NULL' },
   { tableName: 'urge_records', columnName: 'idempotency_key', definition: 'varchar(64) NULL' },
   { tableName: 'urge_records', columnName: 'scope', definition: "varchar(20) NOT NULL DEFAULT 'SINGLE_ASSIGNEE'" },
   { tableName: 'urge_records', columnName: 'source', definition: "varchar(20) NOT NULL DEFAULT 'MANUAL'" },
@@ -74,12 +75,20 @@ const schemaColumns: readonly ColumnSpec[] = [
   { tableName: 'global_rules', columnName: 'serial_rule', definition: 'text NULL' },
   { tableName: 'global_rules', columnName: 'notif_templates', definition: 'text NULL' },
   { tableName: 'global_rules', columnName: 'audit_flow', definition: 'text NULL' },
+  { tableName: 'global_rules', columnName: 'wecom_contact_secret', definition: 'varchar(512) NULL' },
+  { tableName: 'global_rules', columnName: 'wecom_sync_mode', definition: "varchar(20) NULL DEFAULT 'legacy'" },
+  { tableName: 'global_rules', columnName: 'wecom_private_info_enabled', definition: 'tinyint(1) NULL DEFAULT 0' },
 ];
 
 const schemaFixStatements: readonly string[] = [
   'CREATE INDEX items_created_at_id_idx ON items (created_at, id)',
   'CREATE INDEX items_owner_created_at_idx ON items (owner_id, created_at)',
   'CREATE INDEX items_follower_created_at_idx ON items (follower_id, created_at)',
+  'CREATE INDEX messages_receiver_timestamp_id_idx ON messages (receiver_id, timestamp, id)',
+  'CREATE INDEX messages_timestamp_id_idx ON messages (timestamp, id)',
+  'CREATE INDEX activities_timestamp_id_idx ON activities (timestamp, id)',
+  'CREATE INDEX audit_records_submitted_at_id_idx ON audit_records (submitted_at, id)',
+  'CREATE INDEX operation_logs_timestamp_id_idx ON operation_logs (timestamp, id)',
   'CREATE INDEX timeline_nodes_item_timestamp_idx ON timeline_nodes (item_id, timestamp, id)',
   'CREATE INDEX urge_records_auto_lookup_idx ON urge_records (item_id, receiver_id, sender_id, timestamp)',
   'CREATE INDEX urge_records_batch_item_receiver_idx ON urge_records (batch_id, item_id, receiver_id, sub_task_id)',
@@ -93,8 +102,18 @@ const schemaFixStatements: readonly string[] = [
   '    updated_at datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,\n' +
   '    PRIMARY KEY (message_id, user_id)\n' +
   '  )',
+  // 事项可见性关联表：行级权限的索引化形态（与 items JSON 列人员关系双写，读路径可切换走索引）
+  'CREATE TABLE IF NOT EXISTS item_access (\n' +
+  '    item_id varchar(36) NOT NULL,\n' +
+  '    user_id varchar(36) NOT NULL,\n' +
+  '    relation varchar(20) NOT NULL,\n' +
+  '    PRIMARY KEY (item_id, user_id, relation)\n' +
+  '  )',
+  'CREATE INDEX item_access_user_relation_idx ON item_access (user_id, relation, item_id)',
   'ALTER TABLE operation_logs MODIFY COLUMN timestamp datetime NOT NULL DEFAULT CURRENT_TIMESTAMP',
   'ALTER TABLE global_rules MODIFY COLUMN wecom_corp_secret varchar(512) NULL',
+  // 历史数据存在 `${itemId}-${assigneeId}` 形态的复合子任务 ID（可达 74 字符），varchar(36) 会直接插入失败。
+  'ALTER TABLE urge_records MODIFY COLUMN sub_task_id varchar(128) NULL',
 ];
 
 let ensureDatabaseSchemaPromise: Promise<void> | null = null;

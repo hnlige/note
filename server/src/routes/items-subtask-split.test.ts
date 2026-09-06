@@ -29,7 +29,7 @@ test('单责任人不拆分（返回空数组）', () => {
   assert.equal(subTasks.length, 0);
 });
 
-test('多责任人自动拆分：每位责任人一条独立子任务，含三类日期', () => {
+test('多责任人自动拆分：要求完成日期不复制为责任人计划日期', () => {
   const pairs = buildOwnerPairs(['u1', 'u2', 'u3'], ['张三', '李四', '王五']);
   const subTasks = buildAutoSubTasks(
     'item-9',
@@ -44,18 +44,18 @@ test('多责任人自动拆分：每位责任人一条独立子任务，含三�
     subTasks.map((t: any) => t.assigneeName).sort(),
     ['张三', '李四', '王五'],
   );
-  // 要求完成日期全事项通用，计划完成日期缺省回退到要求完成日期
+  // 要求完成日期全事项通用，但责任人计划完成日期必须留空，等待各自签收填写
   for (const t of subTasks) {
     assert.equal(t.parentItemId, 'item-9');
     assert.equal(t.requiredCompletionDate, '2026-09-01');
-    assert.equal(t.plannedCompletionDate, '2026-09-01');
+    assert.equal(t.plannedCompletionDate, '');
     assert.equal(t.status, 'PENDING');
     assert.equal(t.actualCompletionDate, '');
     assert.ok(t.id.startsWith('uuid-'));
   }
 });
 
-test('多责任人拆分时计划完成日期优先使用各自填写值', () => {
+test('多责任人拆分时显式计划完成日期只作为初始化值，不覆盖要求完成日期', () => {
   const pairs = buildOwnerPairs(['u1', 'u2'], ['张三', '李四']);
   const subTasks = buildAutoSubTasks(
     'item-2',

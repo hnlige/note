@@ -1,7 +1,6 @@
-/**
- * 简单内存缓存模块
- * 用于缓存低频变更数据（角色、字典、部门树），减少数据库查询压力
- */
+import { getRedisClient, isRedisConfigured } from './redis';
+
+/** L1 内存缓存 + 可选 Redis 共享缓存，用于低频变更数据。 */
 
 interface CacheEntry<T> {
   data: T;
@@ -19,6 +18,8 @@ const store = new Map<string, CacheEntry<unknown>>();
  * @param ttlMs     缓存有效期（毫秒），默认 60000
  */
 export function cacheMiddleware(namespace: string, ttlMs = 60_000) {
+  if (isRedisConfigured()) return distributedCacheMiddleware(namespace, ttlMs);
+
   return (req: any, res: any, next: any) => {
     // 写操作自动失效缓存
     if (req.method !== 'GET' && req.method !== 'HEAD') {
@@ -48,6 +49,49 @@ export function cacheMiddleware(namespace: string, ttlMs = 60_000) {
   };
 }
 
+function distributedCacheMiddleware(namespace: string, ttlMs: number) {
+  return async (req: any, res: any, next: any) => {
+    if (req.method !== 'GET' && req.method !== 'HEAD') {
+      invalidate(namespace);
+      return next();
+    }
+
+    const userScopedSuffix = req.authUser?.id ? `:user:${req.authUser.id}` : '';
+    const key = `${namespace}${userScopedSuffix}:${req.originalUrl || req.url}`;
+    const entry = store.get(key);
+    if (entry && Date.now() < entry.expiry) {
+      res.setHeader('X-Cache', 'HIT-L1');
+      return res.json(entry.data);
+    }
+
+    try {
+      const redis = await getRedisClient();
+      const cached = redis ? await redis.get(`duban:cache:${key}`) : null;
+      if (cached) {
+        const data = JSON.parse(cached);
+        store.set(key, { data, expiry: Date.now() + ttlMs });
+        res.setHeader('X-Cache', 'HIT-L2');
+        return res.json(data);
+      }
+    } catch (error) {
+      console.error('[Redis] cache read failed:', error);
+    }
+
+    const originalJson = res.json.bind(res);
+    res.json = (body: unknown) => {
+      if (res.statusCode >= 200 && res.statusCode < 300) {
+        store.set(key, { data: body, expiry: Date.now() + ttlMs });
+        void getRedisClient()
+          .then((redis) => redis?.set(`duban:cache:${key}`, JSON.stringify(body), { PX: ttlMs }))
+          .catch((error) => console.error('[Redis] cache write failed:', error));
+      }
+      res.setHeader('X-Cache', 'MISS');
+      return originalJson(body);
+    };
+    next();
+  };
+}
+
 /**
  * 使指定命名空间的所有缓存失效
  */
@@ -56,6 +100,16 @@ export function invalidate(namespace: string) {
     if (key.startsWith(`${namespace}:`)) {
       store.delete(key);
     }
+  }
+  if (isRedisConfigured()) {
+    void getRedisClient()
+      .then(async (redis) => {
+        if (!redis) return;
+        for await (const key of redis.scanIterator({ MATCH: `duban:cache:${namespace}:*`, COUNT: 100 })) {
+          await redis.del(key);
+        }
+      })
+      .catch((error) => console.error('[Redis] cache invalidation failed:', error));
   }
 }
 

@@ -74,7 +74,12 @@ export function getMyRoleScopedStatus(
     : getEffectiveItemStatus(item);
 }
 
-function getTodoStatus(item: SupervisionItem, user: MyItemsUser): ItemStatus {
+/**
+ * 「我的待办」状态下钻：优先取责任人视角有效状态，否则取跟进人视角，最后回退事项整体状态。
+ * 与 buildMyItemsScope.todoItems 的过滤口径一致（排除 COMPLETED/ARCHIVED/DISABLED/DELETED）。
+ * 导出供《我的督办》页按 URL status 参数对「我的待办」tab 做状态筛选。
+ */
+export function getTodoStatus(item: SupervisionItem, user: MyItemsUser): ItemStatus {
   const ownerStatus = isItemOwnerForUser(item, user) ? getMyRoleScopedStatus(item, user, 'owner') : undefined;
   const followerStatus = isItemFollowerForUser(item, user) ? getMyRoleScopedStatus(item, user, 'follower') : undefined;
   return [ownerStatus, followerStatus].find(status => status && !TODO_EXCLUDED_STATUSES.includes(status)) || ownerStatus || followerStatus || getEffectiveItemStatus(item);

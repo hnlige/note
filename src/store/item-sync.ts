@@ -10,6 +10,23 @@ type RemoteSupervisionItem = SupervisionItem & {
   updatedAt?: string;
 };
 
+type ItemListPagination = {
+  page: number;
+  pageSize: number;
+  total: number;
+  totalPages: number;
+};
+
+export function unpackItemsListResponse(response: unknown): { items: any[]; pagination?: ItemListPagination } | null {
+  if (Array.isArray(response)) return { items: response };
+  if (!response || typeof response !== 'object') return null;
+  const page = response as { data?: unknown; pagination?: unknown };
+  if (!Array.isArray(page.data) || !page.pagination || typeof page.pagination !== 'object') return null;
+  const pagination = page.pagination as Partial<ItemListPagination>;
+  if (![pagination.page, pagination.pageSize, pagination.total, pagination.totalPages].every(Number.isFinite)) return null;
+  return { items: page.data, pagination: pagination as ItemListPagination };
+}
+
 function parseJsonArray<T>(value: unknown): T[] | undefined {
   if (Array.isArray(value)) return value as T[];
   if (typeof value !== 'string' || value.trim().length === 0) return undefined;

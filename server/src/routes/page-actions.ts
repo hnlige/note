@@ -107,7 +107,12 @@ export function hasPageAction(
   if (permissions.includes('ALL')) return true;
 
   const allowedPageActions = parseAllowedPageActions(role?.allowedPageActions);
-  if (allowedPageActions[pageAuth]?.includes(action)) return true;
+  // 页面级配置优先：角色对该页面显式配置过按钮列表时以该列表为准，不再回退全局
+  // allowedActions。否则角色配置页取消某按钮后，旧全局授权仍会放行，与前端
+  // canUsePageAction / isPageActionChecked 的“页面级优先”口径不一致。
+  if (Array.isArray(allowedPageActions[pageAuth])) {
+    return Boolean(allowedPageActions[pageAuth]?.includes(action));
+  }
 
   const allowedActions = asStringArray(role?.allowedActions);
   return allowedActions.includes(action);

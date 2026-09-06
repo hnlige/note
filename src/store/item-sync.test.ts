@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { resolveSyncedItems } from './item-sync.ts';
+import { resolveSyncedItems, unpackItemsListResponse } from './item-sync.ts';
 import { getEffectiveItemStatus } from '../lib/item-format.ts';
 import { SupervisionItem } from '../types';
 
@@ -95,4 +95,16 @@ test('resolveSyncedItems falls back to local demo items when remote list is unav
   assert.equal(getEffectiveItemStatus(resolved[0]), 'OVERDUE');
   assert.equal(getEffectiveItemStatus(resolved[1]), 'SUSPENDED');
   assert.equal(getEffectiveItemStatus(resolved[2]), 'COMPLETED');
+});
+
+test('unpackItemsListResponse accepts both legacy arrays and paginated item responses', () => {
+  assert.deepEqual(unpackItemsListResponse([{ id: 'legacy' }]), { items: [{ id: 'legacy' }] });
+  assert.deepEqual(unpackItemsListResponse({
+    data: [{ id: 'page-1' }],
+    pagination: { page: 1, pageSize: 200, total: 201, totalPages: 2 },
+  }), {
+    items: [{ id: 'page-1' }],
+    pagination: { page: 1, pageSize: 200, total: 201, totalPages: 2 },
+  });
+  assert.equal(unpackItemsListResponse({ data: [] }), null);
 });

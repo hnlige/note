@@ -18,6 +18,7 @@ function maskWecomSecret(config: Record<string, any>): Record<string, any> {
   return {
     ...config,
     wecomCorpSecret: config.wecomCorpSecret ? SECRET_MASK : '',
+    wecomContactSecret: config.wecomContactSecret ? SECRET_MASK : '',
   };
 }
 
@@ -66,6 +67,7 @@ globalRulesRouter.put('/', requireGlobalRulesManage, async (req: Request, res: R
     const { autoRemindEnabled, autoRemindDays, autoUrgeEnabled, autoUrgeDays,
       lightDelayDays, lightWarningDays, wecomCorpId, wecomCorpSecret, wecomAgentId,
       wecomToken, wecomEncodingAesKey, wecomCallbackUrl, wecomTemplates,
+      wecomContactSecret, wecomSyncMode, wecomPrivateInfoEnabled,
       yellowLightDays, redLightHours, autoUrgeFrequency, urgeChannels, serialRule,
       notifTemplates, auditFlow } = req.body;
 
@@ -85,6 +87,9 @@ globalRulesRouter.put('/', requireGlobalRulesManage, async (req: Request, res: R
     if (auditFlow !== undefined) updates.auditFlow = auditFlow;
     if (wecomCorpId !== undefined) updates.wecomCorpId = wecomCorpId;
     if (wecomCorpSecret !== undefined && !isSecretMask(wecomCorpSecret)) updates.wecomCorpSecret = wecomCorpSecret;
+    if (wecomContactSecret !== undefined && !isSecretMask(wecomContactSecret)) updates.wecomContactSecret = wecomContactSecret;
+    if (wecomSyncMode !== undefined) updates.wecomSyncMode = wecomSyncMode === 'list_id' ? 'list_id' : 'legacy';
+    if (wecomPrivateInfoEnabled !== undefined) updates.wecomPrivateInfoEnabled = Boolean(wecomPrivateInfoEnabled);
     if (wecomAgentId !== undefined) updates.wecomAgentId = wecomAgentId;
     if (wecomToken !== undefined) updates.wecomToken = wecomToken;
     if (wecomEncodingAesKey !== undefined) updates.wecomEncodingAesKey = wecomEncodingAesKey;

@@ -1,8 +1,9 @@
-import React, { useState, useMemo, useRef } from 'react';
-import { useNavigate } from 'react-router-dom';
+import React, { useEffect, useState, useMemo, useRef } from 'react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { MainLayout } from '../../components/Layout/MainLayout';
 import { useStore } from '../../store/useStore';
 import { useToast } from '../../components/Common/Toast';
+import { api } from '../../lib/api';
 import { 
   ClipboardList, 
   CheckSquare, 
@@ -21,39 +22,64 @@ import {
 import { motion } from 'framer-motion';
 import { Drawer } from '../../components/Common/Drawer';
 import { formatDate, getEffectiveStatusForUser, getItemStatusLabel, getUserSubTask, isManualDateOnOrAfter, isValidManualDateInput, normalizeManualDateInput, todayDateString, updateUserSubTask, compareItemsByRaiseDateDesc } from '../../lib/item-format';
-import { canUseAllowedAction, mapRoleIdentityToUserRole } from '../../store/role-access';
-import { buildMyItemsScope, filterMyItemsByStatus, getMyRoleScopedStatus, getVisibleMyItemsRoleTabs, MyItemsRoleTabKey, MyItemsStatusTabKey } from './my-items-scope';
+import { canUsePageAction, mapRoleIdentityToUserRole } from '../../store/role-access';
+import { buildMyItemsScope, filterMyItemsByStatus, getMyRoleScopedStatus, getTodoStatus, getVisibleMyItemsRoleTabs, MyItemsRoleTabKey, MyItemsStatusTabKey } from './my-items-scope';
 
 type RoleTabKey = MyItemsRoleTabKey;
 type TabKey = MyItemsStatusTabKey;
 
 const MyItems: React.FC = () => {
   const navigate = useNavigate();
-  const { items, currentUser, updateItem, addLog, orgUsers, roles, approveComplete, rejectItem } = useStore();
+  const [searchParams] = useSearchParams();
+  const { items, currentUser, updateItem, addLog, orgUsers, roles, approveComplete, rejectItem, syncItems } = useStore();
   const { showToast } = useToast();
-  const [activeRoleTab, setActiveRoleTab] = useState<RoleTabKey>('todo');
-  const [activeTab, setActiveTab] = useState<TabKey>('all');
+  const [isItemsLoading, setIsItemsLoading] = useState(true);
+  // 工作台首页卡片下钻带 role=<todo|owner|follower> 与 status=<PENDING|...> 参数，
+  // 进入页面时据其定位到对应顶层页签与状态筛选；非法值回退到默认 todo / all。
+  const validRoleTabs: RoleTabKey[] = ['todo', 'owner', 'follower'];
+  const validStatusTabs: TabKey[] = ['all', 'PENDING', 'EXECUTING', 'OVERDUE', 'DELAYED', 'COMPLETED'];
+  const initialRole = (searchParams.get('role') as RoleTabKey | null);
+  const initialStatus = (searchParams.get('status') as TabKey | null);
+  const [activeRoleTab, setActiveRoleTab] = useState<RoleTabKey>(
+    initialRole && validRoleTabs.includes(initialRole) ? initialRole : 'todo',
+  );
+  const [activeTab, setActiveTab] = useState<TabKey>(
+    initialStatus && validStatusTabs.includes(initialStatus) ? initialStatus : 'all',
+  );
   const [feedbackDrawer, setFeedbackDrawer] = useState<{ open: boolean; itemId: string; itemTitle: string }>({ open: false, itemId: '', itemTitle: '' });
   const [feedbackContent, setFeedbackContent] = useState('');
   const [feedbackFiles, setFeedbackFiles] = useState<File[]>([]);
   const feedbackFileInputRef = useRef<HTMLInputElement>(null);
   const [signDrawer, setSignDrawer] = useState<{ open: boolean; itemId: string; itemTitle: string }>({ open: false, itemId: '', itemTitle: '' });
   const [signPlannedDate, setSignPlannedDate] = useState('');
+  // 按钮级权限按「我的督办」页面口径判定（页面目录 + 页面级配置优先），
+  // 与本页写请求携带的 X-Page-Auth=MENU_MY_ITEMS 后端校验一致，
+  // 角色配置页取消签收/反馈按钮后这里同步隐藏，不再受全局 allowedActions 干扰。
   const canSignItem = useMemo(
-    () => canUseAllowedAction(currentUser, roles, 'EDIT_ITEM') || canUseAllowedAction(currentUser, roles, 'SIGN_ITEM'),
+    () => canUsePageAction(currentUser, roles, 'MENU_MY_ITEMS', 'SIGN_ITEM'),
     [currentUser, roles],
   );
   const canFeedbackItem = useMemo(
-    () => canUseAllowedAction(currentUser, roles, 'EDIT_ITEM') || canUseAllowedAction(currentUser, roles, 'FEEDBACK_ITEM'),
+    () => canUsePageAction(currentUser, roles, 'MENU_MY_ITEMS', 'FEEDBACK_ITEM'),
     [currentUser, roles],
   );
 
-  const readFileAsDataUrl = (file: File) => new Promise<string>((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result || ''));
-    reader.onerror = () => reject(reader.error || new Error('读取附件失败'));
-    reader.readAsDataURL(file);
-  });
+  // 《我的督办》直接依赖最新的责任人/跟进人关系。进入页面时主动回读权威事项数据，
+  // 不依赖 MainLayout 的并发启动同步，避免旧标签页或同步时序导致短暂/持续显示 0。
+  useEffect(() => {
+    let active = true;
+    setIsItemsLoading(true);
+    syncItems()
+      .catch(() => {
+        if (active) showToast('督办事项加载失败，请刷新页面重试', 'error');
+      })
+      .finally(() => {
+        if (active) setIsItemsLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [currentUser.id, syncItems, showToast]);
 
   const resetFeedbackDrawer = () => {
     setFeedbackDrawer({ open: false, itemId: '', itemTitle: '' });
@@ -81,6 +107,14 @@ const MyItems: React.FC = () => {
     [userRoleType],
   );
 
+  // URL role 参数指定的页签若对当前用户不可见（如跟进人从 role=owner 下钻），
+  // 回退到「我的待办」，避免空白页或越权展示。
+  useEffect(() => {
+    if (!visibleRoleTabs.includes(activeRoleTab)) {
+      setActiveRoleTab('todo');
+    }
+  }, [visibleRoleTabs, activeRoleTab]);
+
   const myItemsScope = useMemo(
     () => buildMyItemsScope(items, currentMyItemsUser),
     [items, currentMyItemsUser],
@@ -99,17 +133,29 @@ const MyItems: React.FC = () => {
   );
 
   // 按角色 Tab + 状态 Tab 筛选
+  // 「我的待办」tab 默认无状态子页签 UI（混合责任人+跟进人视角），
+  // 但从工作台卡片下钻带 status 参数时仍按状态筛选（用 getTodoStatus 与 todoItems 口径一致）。
   const filteredItems = useMemo(() => {
-    if (activeRoleTab === 'todo') return myTodoItems;
+    if (activeRoleTab === 'todo') {
+      if (activeTab === 'all') return myTodoItems;
+      return myTodoItems.filter(item => getTodoStatus(item, currentMyItemsUser) === activeTab);
+    }
     return filterMyItemsByStatus(roleScopedItems, currentMyItemsUser, activeRoleTab, activeTab);
   }, [activeRoleTab, activeTab, currentMyItemsUser, roleScopedItems, myTodoItems]);
 
   // 按"提出时间"倒序排列（最新日期的在最上面）
   const sortedItems = useMemo(() => [...filteredItems].sort(compareItemsByRaiseDateDesc), [filteredItems]);
 
-  // 签收时是否需要填写计划完成日期：只看 plannedCompletionDate 是否为空。
-  // 不再把 requiredCompletionDate 算作已填——签收必须写入 plannedCompletionDate。
+  // 签收时的计划完成日期来源：有要求完成日期时直接按要求日期签收（后端同样口径，且不允许责任人覆盖），
+  // 仅在完全没有要求完成日期时才要求责任人补填计划完成日期。
+  const getRequiredCompletionDateForSign = (itemId: string) => {
+    const item = items.find(i => i.id === itemId);
+    if (!item) return '';
+    const subTask = getUserSubTask(item, currentUser.id);
+    return subTask?.requiredCompletionDate || item.requiredCompletionDate || '';
+  };
   const requiresPlannedDateOnSign = (itemId: string) => {
+    if (getRequiredCompletionDateForSign(itemId)) return false;
     const item = items.find(i => i.id === itemId);
     if (!item) return false;
     const subTask = getUserSubTask(item, currentUser.id);
@@ -117,10 +163,12 @@ const MyItems: React.FC = () => {
     return !item.plannedCompletionDate;
   };
 
-  const handleSign = async (itemId: string, title: string, plannedDate?: string) => {
+  const handleSign = async (itemId: string, title: string, plannedDate?: string, options?: { useRequiredDate?: boolean }) => {
     const item = items.find(i => i.id === itemId);
     const normalizedPlannedDate = plannedDate ? normalizeManualDateInput(plannedDate) : undefined;
-    if (normalizedPlannedDate) {
+    // 直接按跟进人下发的要求完成日期签收时不做"不早于今天"拦截：该日期是既定截止依据，
+    // 超期未签收的场景仍应允许签收（后端签收同样直接采用要求日期，无此校验）。
+    if (normalizedPlannedDate && !options?.useRequiredDate) {
       if (!isValidManualDateInput(normalizedPlannedDate)) {
         showToast('计划完成日期请按年/月/日格式输入，例如：2026/06/03', 'warning');
         return;
@@ -172,7 +220,8 @@ const MyItems: React.FC = () => {
       setSignDrawer({ open: true, itemId, itemTitle: title });
       return;
     }
-    handleSign(itemId, title);
+    // 有要求完成日期：直接按要求日期签收，无需责任人再填计划完成日期
+    handleSign(itemId, title, getRequiredCompletionDateForSign(itemId) || undefined, { useRequiredDate: true });
   };
 
   // 审批通过（跟进人）：状态保持不变，提交上级领导终审
@@ -209,14 +258,16 @@ const MyItems: React.FC = () => {
     const currentStatus = item.status || 'PENDING';
     // 如果当前是 PENDING，则变为 EXECUTING；否则保持当前状态
     const newStatus = currentStatus === 'PENDING' ? 'EXECUTING' : currentStatus;
-    const feedbackAttachments = await Promise.all(feedbackFiles.map(async (file) => ({
-      id: Math.random().toString(36).slice(2, 11),
-      name: file.name,
-      url: await readFileAsDataUrl(file),
-      size: (file.size / 1024).toFixed(1) + 'KB',
-      type: file.type || 'application/octet-stream',
-      uploadedAt: new Date().toISOString().split('T')[0],
-    })));
+    let feedbackAttachments;
+    try {
+      feedbackAttachments = await Promise.all(
+        feedbackFiles.map((file) => api.attachments.upload(item.id, file, 'MENU_MY_ITEMS')),
+      );
+    } catch (error) {
+      console.error('Upload feedback attachments error:', error);
+      showToast(error instanceof Error && error.message ? `附件上传失败：${error.message}` : '附件上传失败，请稍后重试', 'error');
+      return;
+    }
     const effectiveOwnerStatus = getEffectiveStatusForUser(item, currentUser.id);
     const subTaskUpdates = updateUserSubTask(item, currentUser.id, {
       status: effectiveOwnerStatus === 'PENDING' ? 'EXECUTING' : effectiveOwnerStatus,
@@ -289,6 +340,17 @@ const MyItems: React.FC = () => {
   ];
 
   const showStatusTabs = activeRoleTab !== 'todo';
+
+  if (isItemsLoading) {
+    return (
+      <MainLayout>
+        <div className="bg-white rounded-2xl border border-slate-100 shadow-sm p-12 text-center">
+          <RefreshCw className="w-8 h-8 text-blue-500 mx-auto mb-4 animate-spin" />
+          <p className="text-slate-600 font-medium">正在加载最新督办事项...</p>
+        </div>
+      </MainLayout>
+    );
+  }
 
   return (
     <MainLayout>
@@ -446,7 +508,7 @@ const MyItems: React.FC = () => {
                     </span>
                     <span className="flex items-center gap-1">
                       <User className="w-3.5 h-3.5" />
-                      跟进人：{item.followerName || '-'}
+                      跟进人：{item.followerNames?.length ? item.followerNames.join('、') : item.followerName || '-'}
                     </span>
                     <span className="flex items-center gap-1">
                       <FileText className="w-3.5 h-3.5" />

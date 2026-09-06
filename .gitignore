@@ -63,7 +63,10 @@ validate-workbench-follower-report.md
 
 # Historical reports, product drafts, and browser fixture captures
 docs/
-mobile/
+# 仅忽略仓库根目录的 mobile 目录（小程序等），不能误伤 src/pages/Mobile；
+# core.ignorecase=true 时 `mobile/` 会连 src/pages/Mobile 一起吞掉。
+/mobile/
+.wechat-m-debug/
 /*.yaml
 !/pnpm-lock.yaml
 batch.json
@@ -73,3 +76,15 @@ scripts/gen_test_excel.py
 scripts/verify-login.mjs
 scripts/playwright-login.mjs
 scripts/verify-timeline-pagination.cjs
+
+# 本地 AI 会话计划与线上验证产物（截图/JSON 报告），不入库
+.zcode/
+outputs/
+
+# Playwright E2E 产物
+test-results/
+playwright-report/
+
+# TypeScript 增量构建产物
+*.tsbuildinfo
+e2e/__screenshots__/

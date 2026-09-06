@@ -1,10 +1,12 @@
 import { Router, Response } from 'express';
+import { randomUUID } from 'node:crypto';
 import { getDb } from '../db';
 import { canReadLogs, canWriteOperationLog } from './module-authz';
 import { requireModuleAccess } from './module-authz.middleware';
 import { AuthenticatedRequest } from './auth.middleware';
 import { AuthSessionUser } from './auth.session';
 import { getCurrentAccessContext } from './access.context';
+import { getPageRequest } from './pagination';
 
 interface OperationLogInput {
   action?: unknown;
@@ -56,15 +58,18 @@ export function parseLogLimit(value: unknown): number | null {
 export function buildOperationLogValues(context: OperationLogRequestContext): OperationLogValues | null {
   const authUser = context.authUser;
   if (!authUser?.id) return null;
-  const currentUser = context.currentUser;
-  if (!currentUser || currentUser.id !== authUser.id) return null;
   const body = parseOperationLogBody(context.body);
   if (!body) return null;
+  // 展示用姓名仅在访问上下文与认证会话属于同一用户时才取 users 表；辅助查询
+  // 缺失或异常时退回已认证会话。这样既不因辅助字段解析失败丢弃审计记录，
+  // 也不会把其他用户的姓名记入当前会话的审计记录。
+  const currentUser = context.currentUser?.id === authUser.id ? context.currentUser : null;
+  const resolvedName = currentUser?.name || currentUser?.username || authUser.name || authUser.username || String(authUser.id);
 
   return {
-    id: context.id || crypto.randomUUID(),
+    id: context.id || randomUUID(),
     userId: authUser.id,
-    userName: currentUser.name || currentUser.username || authUser.id,
+    userName: resolvedName,
     action: body.action,
     module: body.module,
     detail: body.detail,
@@ -82,11 +87,16 @@ logsRouter.get('/', requireLogRead, async (req: AuthenticatedRequest, res: Respo
   try {
     const db = await getDb();
     const { operationLogs: logsTable } = await import('../db/schema');
-    const { desc } = await import('drizzle-orm');
+    const { count, desc } = await import('drizzle-orm');
     const limit = parseLogLimit(req.query.limit);
     if (limit === null) return res.status(400).json({ error: '日志条数必须是 1 到 500 的整数' });
-    const all = await db.select().from(logsTable).orderBy(desc(logsTable.timestamp)).limit(limit);
-    return res.json(all);
+    const page = getPageRequest(req.query as Record<string, unknown>, limit, 500);
+    const [{ total }] = await db.select({ total: count() }).from(logsTable);
+    const rows = await db.select().from(logsTable)
+      .orderBy(desc(logsTable.timestamp), desc(logsTable.id))
+      .limit(page.pageSize)
+      .offset((page.page - 1) * page.pageSize);
+    return res.json({ data: rows, pagination: { ...page, total: Number(total || 0), totalPages: Math.ceil(Number(total || 0) / page.pageSize) } });
   } catch (error) {
     console.error('Get logs error:', error);
     return res.status(500).json({ error: '获取操作日志失败' });

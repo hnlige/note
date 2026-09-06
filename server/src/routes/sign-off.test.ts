@@ -78,14 +78,29 @@ test('历史子任务已离开待签收但缺少 SIGN 时间轴时，仍按责�
     ownerIds: ['u1', 'u2', 'u3'],
     ownerNames: ['张三', '李四', '王五'],
     subTasks: [
-      { assigneeId: 'u1', assigneeName: '张三', status: 'OVERDUE' },
-      { assigneeId: 'u2', assigneeName: '李四', status: 'EXECUTING' },
+      { assigneeId: 'u1', assigneeName: '张三', status: 'OVERDUE', plannedCompletionDate: '2026-08-01' },
+      { assigneeId: 'u2', assigneeName: '李四', status: 'EXECUTING', plannedCompletionDate: '2026-08-02' },
       { assigneeId: 'u3', assigneeName: '王五', status: 'PENDING' },
       { assigneeId: 'other', assigneeName: '无关人员', status: 'COMPLETED' },
     ],
   };
 
   assert.deepEqual(computeSignOffStatus(item, []), { status: 'PARTIAL', signedCount: 2, totalCount: 3 });
+});
+
+test('反馈自动推进但没有 SIGN 和计划完成日期的子任务仍为未签收', () => {
+  const item = {
+    ownerIds: ['u1', 'u2'],
+    ownerNames: ['魏红义', '申林'],
+    subTasks: [
+      { assigneeId: 'u1', assigneeName: '魏红义', status: 'EXECUTING' },
+      { assigneeId: 'u2', assigneeName: '申林', status: 'EXECUTING' },
+    ],
+  };
+  assert.deepEqual(
+    computeSignOffStatus(item, [{ type: 'SIGN', user: '魏红义', actorUserId: 'u1' }]),
+    { status: 'PARTIAL', signedCount: 1, totalCount: 2 },
+  );
 });
 
 test('已有子任务时以子任务状态为准，PENDING 不被历史 SIGN 时间轴误算为已签收', () => {
