@@ -10,7 +10,7 @@ import { Plus, Download, ChevronRight, ChevronDown, Calendar, Zap, Trash2, Filte
 import { SupervisionItem, DeptNode, OrgUser } from '../../types';
 import { formatDate, getEffectiveItemStatus, getItemStatusLabel, getItemStatusStyle, getItemSignOffStatus, getSignOffStatusLabel, getSignOffStatusStyle, getUniqueTimeline, normalizeManualDateInput, compareItemsByRaiseDateDesc, isItemOwnerForUser, isItemRelatedToUser } from '../../lib/item-format';
 import { downloadCsv, downloadExcel } from '../../lib/export-csv';
-import { canUseAllowedAction, canUsePageAction, getAssignedRoleIds } from '../../store/role-access';
+import { canUsePageAction, getAssignedRoleIds } from '../../store/role-access';
 import { buildItemExportConfig, ItemExportFieldPreset, ItemExportFormat } from '../../lib/item-export';
 import { isWorkbenchNoFeedbackItem, isWorkbenchIncompleteItem, isWorkbenchPendingOpenItem, isUserWorkbenchItem } from '../Workbench/components/workbench-metrics';
 import { filterVisibleItems, getEffectiveRoleScope } from '../../store/item-access';
@@ -310,12 +310,14 @@ const Items: React.FC = () => {
   const [selectedItem, setSelectedItem] = useState<SupervisionItem | null>(null);
   const [isPreviewOpen, setIsPreviewOpen] = useState(false);
   const [isCreateOpen, setIsCreateOpen] = useState(false);
+  // 按钮级权限按「事项列表」页面口径判定，与后端 X-Page-Auth=MENU_ITEMS 校验一致；
+  // 角色配置页取消发起督办/删除事项后按钮隐藏，不再回退全局 allowedActions（含 EDIT_ITEM 旁路）。
   const canCreateItems = useMemo(
-    () => canUseAllowedAction(currentUser, roles, 'EDIT_ITEM') || canUseAllowedAction(currentUser, roles, 'CREATE_ITEM'),
+    () => canUsePageAction(currentUser, roles, 'MENU_ITEMS', 'CREATE_ITEM'),
     [currentUser, roles],
   );
   const canDeleteItems = useMemo(
-    () => canUseAllowedAction(currentUser, roles, 'EDIT_ITEM') || canUseAllowedAction(currentUser, roles, 'DELETE_ITEM'),
+    () => canUsePageAction(currentUser, roles, 'MENU_ITEMS', 'DELETE_ITEM'),
     [currentUser, roles],
   );
   const hasDeleteFallbackPrivilege = useMemo(

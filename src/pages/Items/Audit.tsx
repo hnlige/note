@@ -22,14 +22,19 @@ import { api } from '../../lib/api';
 import { useToast } from '../../components/Common/Toast';
 import type { AuditRecord, SupervisionItem } from '../../types';
 import { formatDateTime, getItemStatusLabel, getItemStatusStyle, formatUrgeTimelineContent } from '../../lib/item-format';
+import { canUsePageAction } from '../../store/role-access';
 
 const AuditPage: React.FC = () => {
-  const { auditRecords, syncAuditRecords, syncItems, addLog, currentUser } = useStore();
+  const { auditRecords, syncAuditRecords, syncItems, addLog, currentUser, roles } = useStore();
   const { showToast } = useToast();
   const [ratings, setRatings] = React.useState<Record<string, number>>({});
   const [evaluations, setEvaluations] = React.useState<Record<string, string>>({});
   const [processingId, setProcessingId] = React.useState<string | null>(null);
   const pendingRecords = auditRecords.filter(r => r.status === 'PENDING' || r.status === 'FOLLOWER_APPROVED');
+  // 审核动作按「办结审核」页面口径判定，与提交时 X-Page-Auth=MENU_AUDIT 的后端校验一致，
+  // 角色配置页取消审核通过/驳回后按钮隐藏，避免“可见但提交 403”。
+  const canApproveAudit = canUsePageAction(currentUser, roles, 'MENU_AUDIT', 'APPROVE_ITEM');
+  const canRejectAudit = canUsePageAction(currentUser, roles, 'MENU_AUDIT', 'REJECT_ITEM');
 
   // ─── 完整案卷弹窗状态 ───
   const [caseFileRecordId, setCaseFileRecordId] = React.useState<string | null>(null);
@@ -162,22 +167,26 @@ const AuditPage: React.FC = () => {
                       </div>
                     </div>
                     <div className="flex gap-2">
-                      <button 
-                        onClick={() => handleAudit(record.id, record.itemId, false)}
-                        disabled={processingId === record.id}
-                        className="p-2 text-red-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-all"
-                        title="驳回"
-                      >
-                        <XCircle className="w-6 h-6" />
-                      </button>
-                      <button 
-                        onClick={() => handleAudit(record.id, record.itemId, true)}
-                        disabled={processingId === record.id}
-                        className="p-2 text-green-400 hover:text-green-600 hover:bg-green-50 rounded-lg transition-all"
-                        title="通过"
-                      >
-                        <CheckCircle2 className="w-6 h-6" />
-                      </button>
+                      {canRejectAudit && (
+                        <button
+                          onClick={() => handleAudit(record.id, record.itemId, false)}
+                          disabled={processingId === record.id}
+                          className="p-2 text-red-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-all"
+                          title="驳回"
+                        >
+                          <XCircle className="w-6 h-6" />
+                        </button>
+                      )}
+                      {canApproveAudit && (
+                        <button
+                          onClick={() => handleAudit(record.id, record.itemId, true)}
+                          disabled={processingId === record.id}
+                          className="p-2 text-green-400 hover:text-green-600 hover:bg-green-50 rounded-lg transition-all"
+                          title="通过"
+                        >
+                          <CheckCircle2 className="w-6 h-6" />
+                        </button>
+                      )}
                     </div>
                   </div>
 

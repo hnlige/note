@@ -38,7 +38,8 @@ import { Drawer } from '../../components/Common/Drawer';
 import { PaginationFooter } from '../../components/Common/PaginationFooter';
 import { AllowedAction, Attachment, DeptNode, TimelineNode } from '../../types';
 import { formatDate, formatUrgeTimelineContent, getEffectiveItemStatus, getEffectiveStatusForUserIdentity, getItemSignOffStatus, getItemStatusLabel, getItemStatusStyle, getSignOffStatusLabel, getSignOffStatusStyle, getUserSubTaskForIdentity, isItemFollowerForUser, isItemOwnerForUser, isManualDateOnOrAfter, isValidManualDateInput, normalizeManualDateInput, todayDateString, updateUserSubTaskForIdentity, formatDateTime } from '../../lib/item-format';
-import { canUseAllowedAction, getAssignedRoleIds } from '../../store/role-access';
+import { getAssignedRoleIds } from '../../store/role-access';
+import { canUseDetailPageAction } from './detail-actions';
 import { getDetailBackNavigation, getDetailPageAuth, getMessageIdFromDetailState } from './detail-navigation';
 import { paginateTimelineNodes, prepareTimelineNodes, TIMELINE_PAGE_SIZE_OPTIONS } from './detail-timeline-pagination';
 import { getItemApprovalState } from '../../lib/item-approval';
@@ -262,9 +263,11 @@ const ItemDetail: React.FC = () => {
   // 仅在完全没有要求完成日期时才要求责任人补填计划完成日期。
   const requiredCompletionDateForSign = currentOwnerSubTask?.requiredCompletionDate || item?.requiredCompletionDate || '';
   const requiresPlannedDateOnSign = item ? (!requiredCompletionDateForSign && (currentOwnerSubTask ? !currentOwnerSubTask.plannedCompletionDate : !item.plannedCompletionDate)) : false;
-  const canLegacyEdit = canUseAllowedAction(currentUser, roles, 'EDIT_ITEM');
+  // 按钮级权限按进入来源页面（itemPageAuth）判定，与后端 X-Page-Auth 校验同口径：
+  // 页面目录不含的动作（如「我的督办」下的变更）或页面级已取消的动作不再显示，
+  // 避免“按钮可见但提交必 403”或“角色配置取消后按钮仍显示”的口径漂移。
   const canPerform = (action: AllowedAction) =>
-    canLegacyEdit || canUseAllowedAction(currentUser, roles, action);
+    canUseDetailPageAction(currentUser, roles, itemPageAuth, action);
   const canDeleteByIssuerRule = Boolean(normalizedIssuerIdentity && currentIdentityKeys.includes(normalizedIssuerIdentity));
   const hasDeleteFallbackPrivilege = isAdmin || getAssignedRoleIds(currentUser).includes('r5');
 
@@ -718,10 +721,13 @@ const ItemDetail: React.FC = () => {
   // ─── Status helpers ───
   const aggregateStatus = item ? getEffectiveItemStatus(item) : undefined;
   const effectiveStatus = item ? (isOwner ? getEffectiveStatusForUserIdentity(item, currentUser) : aggregateStatus) : undefined;
+  // 跟进人反馈在数据层走 FOLLOWER_FEEDBACK，后端按 FEEDBACK_ITEM 兜底放行，
+  // 前端同样以 FEEDBACK_ITEM 判定，避免撤销 CHANGE_ITEM 后反馈框误消失。
   const canSubmitFeedback = Boolean(
     item &&
     (effectiveStatus === 'EXECUTING' || effectiveStatus === 'DELAYED') &&
-    ((isOwner && canPerform('FEEDBACK_ITEM')) || (isFollower && canPerform('CHANGE_ITEM')))
+    (isOwner || isFollower) &&
+    canPerform('FEEDBACK_ITEM')
   );
   const canApplyDelay = Boolean(item && isOwner && effectiveStatus === 'OVERDUE' && canPerform('DELAY_ITEM'));
   const feedbackPlaceholder = isFollower ? '在此输入给责任人的反馈意见...' : '在此输入您的反馈或进展说明...';

@@ -42,3 +42,18 @@ test('hasPageAction 对授予新增按钮级 action 的角色返回 true', () =>
   assert.equal(hasPageAction(role, 'MENU_WORKBENCH', 'BATCH_IMPORT'), true);
   assert.equal(hasPageAction(role, 'MENU_WORKBENCH', 'EXPORT'), false);
 });
+
+test('hasPageAction 页面级显式排除优先于全局 allowedActions 回退', () => {
+  // 复现「角色配置页取消变更按钮后旧全局授权仍放行」的口径不一致：
+  // 页面已显式配置按钮列表且不含 CHANGE_ITEM 时，即使全局 allowedActions
+  // 仍包含 CHANGE_ITEM 也必须拒绝（与前端 canUsePageAction 口径对齐）。
+  const role = {
+    authCodes: ['MENU_ITEMS'],
+    allowedActions: ['READ', 'SEARCH', 'CHANGE_ITEM'],
+    allowedPageActions: { MENU_ITEMS: ['READ', 'SEARCH', 'URGE_ITEM'] },
+  };
+  assert.equal(hasPageAction(role, 'MENU_ITEMS', 'CHANGE_ITEM'), false);
+  assert.equal(hasPageAction(role, 'MENU_ITEMS', 'URGE_ITEM'), true);
+  // 未配置页面级的页面仍回退全局授权
+  assert.equal(hasPageAction(role, 'MENU_WORKBENCH', 'CHANGE_ITEM'), true);
+});

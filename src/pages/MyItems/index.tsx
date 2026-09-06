@@ -22,7 +22,7 @@ import {
 import { motion } from 'framer-motion';
 import { Drawer } from '../../components/Common/Drawer';
 import { formatDate, getEffectiveStatusForUser, getItemStatusLabel, getUserSubTask, isManualDateOnOrAfter, isValidManualDateInput, normalizeManualDateInput, todayDateString, updateUserSubTask, compareItemsByRaiseDateDesc } from '../../lib/item-format';
-import { canUseAllowedAction, mapRoleIdentityToUserRole } from '../../store/role-access';
+import { canUsePageAction, mapRoleIdentityToUserRole } from '../../store/role-access';
 import { buildMyItemsScope, filterMyItemsByStatus, getMyRoleScopedStatus, getTodoStatus, getVisibleMyItemsRoleTabs, MyItemsRoleTabKey, MyItemsStatusTabKey } from './my-items-scope';
 
 type RoleTabKey = MyItemsRoleTabKey;
@@ -52,12 +52,15 @@ const MyItems: React.FC = () => {
   const feedbackFileInputRef = useRef<HTMLInputElement>(null);
   const [signDrawer, setSignDrawer] = useState<{ open: boolean; itemId: string; itemTitle: string }>({ open: false, itemId: '', itemTitle: '' });
   const [signPlannedDate, setSignPlannedDate] = useState('');
+  // 按钮级权限按「我的督办」页面口径判定（页面目录 + 页面级配置优先），
+  // 与本页写请求携带的 X-Page-Auth=MENU_MY_ITEMS 后端校验一致，
+  // 角色配置页取消签收/反馈按钮后这里同步隐藏，不再受全局 allowedActions 干扰。
   const canSignItem = useMemo(
-    () => canUseAllowedAction(currentUser, roles, 'EDIT_ITEM') || canUseAllowedAction(currentUser, roles, 'SIGN_ITEM'),
+    () => canUsePageAction(currentUser, roles, 'MENU_MY_ITEMS', 'SIGN_ITEM'),
     [currentUser, roles],
   );
   const canFeedbackItem = useMemo(
-    () => canUseAllowedAction(currentUser, roles, 'EDIT_ITEM') || canUseAllowedAction(currentUser, roles, 'FEEDBACK_ITEM'),
+    () => canUsePageAction(currentUser, roles, 'MENU_MY_ITEMS', 'FEEDBACK_ITEM'),
     [currentUser, roles],
   );
 
