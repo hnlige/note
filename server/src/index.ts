@@ -50,14 +50,16 @@ app.use(cors({
   exposedHeaders: ['X-Duban-Auth-Token'],
 }));
 
-// 全局请求超时（30秒，防止慢请求耗尽资源）；SSE 流式响应不适用（headers 立即发送、连接长驻）
+// 全局请求超时（30秒，防止慢请求耗尽资源）；SSE 流式响应不适用（headers 立即发送、连接长驻）；
+// 附件上传按 50MB 上限放宽到 180 秒（慢上行网络下仅接收请求体就可能超过 30 秒）。
 app.use((req: import('express').Request, res, next) => {
   if (req.path === '/api/messages/stream') return next();
+  const isAttachmentUpload = req.path.startsWith('/api/attachments/');
   const timeout = setTimeout(() => {
     if (!res.headersSent) {
       res.status(503).json({ error: '请求超时，请稍后重试' });
     }
-  }, 30000);
+  }, isAttachmentUpload ? 180000 : 30000);
   res.on('finish', () => clearTimeout(timeout));
   next();
 });

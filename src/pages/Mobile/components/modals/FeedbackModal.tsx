@@ -68,7 +68,7 @@ export const FeedbackModal: React.FC<FeedbackModalProps> = ({ open, onClose, onS
 
       {/* 上传附件 */}
       <div>
-        <FieldLabel hint="可选，单文件≤10MB">上传附件</FieldLabel>
+        <FieldLabel hint="可选，单文件≤50MB">上传附件</FieldLabel>
         <AttachmentUpload
           files={files.map(f => ({ name: f.name, size: f.size }))}
           onPick={(list) => list && setFiles(prev => [...prev, ...Array.from(list)])}

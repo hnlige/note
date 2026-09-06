@@ -96,7 +96,8 @@ fi
 # client_max_body_size 默认 1m，会把 >1m 的附件上传打成 413，必须放大
 cat > /etc/nginx/conf.d/00-duban-tuning.conf <<'NGINX'
 # duban http 级调优（aliyun-init-app-server.sh 写入）
-client_max_body_size 10m;
+# 附件上传上限 50MB，与后端 getMaxAttachmentBytes 保持一致
+client_max_body_size 50m;
 gzip_vary on;
 gzip_proxied any;
 gzip_comp_level 5;

@@ -38,8 +38,8 @@ export function getCosConfig(env: NodeJS.ProcessEnv = process.env): CosConfig | 
 
 export function getMaxAttachmentBytes(env: NodeJS.ProcessEnv = process.env): number {
   const configured = Number(env.MAX_ATTACHMENT_BYTES);
-  if (!Number.isInteger(configured) || configured <= 0) return 10 * 1024 * 1024;
-  return Math.min(configured, 25 * 1024 * 1024);
+  if (!Number.isInteger(configured) || configured <= 0) return 50 * 1024 * 1024;
+  return Math.min(configured, 50 * 1024 * 1024);
 }
 
 export function sanitizeAttachmentName(name: string): string {

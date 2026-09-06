@@ -6,7 +6,7 @@ import { getCurrentAccessContext } from './access.context';
 import { filterItemsByAccess } from './access.policy';
 import { canUseItemAction } from './items.policy';
 import { getItemIdentityBackfill } from './items.backfill';
-import { ensureItemActorAllowed, normalizeItemJsonFields, resolveItemPageAuth } from './items';
+import { ensureAttachmentUploadActorAllowed, normalizeItemJsonFields, resolveItemPageAuth } from './items';
 import { getMaxAttachmentBytes, resolveAttachmentUrl, sanitizeAttachmentName, uploadAttachment } from '../storage/cos';
 
 export const attachmentsRouter = Router();
@@ -26,7 +26,8 @@ function parseFileName(value: string): string | null {
 
 attachmentsRouter.post(
   '/items/:itemId',
-  express.raw({ type: '*/*', limit: '25mb' }),
+  // raw 层留少量余量（52mb），精确的 50MB 业务上限由 getMaxAttachmentBytes 判定并返回明确错误。
+  express.raw({ type: '*/*', limit: '52mb' }),
   async (req: AuthenticatedRequest, res: Response) => {
     try {
       if (!req.authUser?.id) return res.status(401).json({ error: '请先登录' });
@@ -68,7 +69,7 @@ attachmentsRouter.post(
       })) {
         return res.status(403).json({ error: '当前角色无上传附件权限' });
       }
-      if (!ensureItemActorAllowed(accessContext, 'FEEDBACK_ITEM', permissionItem as any, res)) return;
+      if (!ensureAttachmentUploadActorAllowed(accessContext, permissionItem as any, res)) return;
 
       const attachment = await uploadAttachment({
         itemId: item.id,

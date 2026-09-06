@@ -28,7 +28,9 @@ test('attachment names and keys cannot escape the configured prefix', () => {
 });
 
 test('attachment size uses a bounded default and accepts positive configuration', () => {
-  assert.equal(getMaxAttachmentBytes({}), 10 * 1024 * 1024);
+  assert.equal(getMaxAttachmentBytes({}), 50 * 1024 * 1024);
   assert.equal(getMaxAttachmentBytes({ MAX_ATTACHMENT_BYTES: '2048' }), 2048);
-  assert.equal(getMaxAttachmentBytes({ MAX_ATTACHMENT_BYTES: '-1' }), 10 * 1024 * 1024);
+  assert.equal(getMaxAttachmentBytes({ MAX_ATTACHMENT_BYTES: '-1' }), 50 * 1024 * 1024);
+  // 配置超过 50MB 上限时被压回上限，避免 env 误配绕过 raw/nginx 层限制。
+  assert.equal(getMaxAttachmentBytes({ MAX_ATTACHMENT_BYTES: String(100 * 1024 * 1024) }), 50 * 1024 * 1024);
 });

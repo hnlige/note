@@ -693,6 +693,26 @@ export function ensureItemActorAllowed(
   return true;
 }
 
+/**
+ * 附件上传的 actor 口径：前端反馈区对责任人和跟进人都开放（跟进人反馈 FOLLOWER_FEEDBACK 同样带附件），
+ * 上传接口无法从请求体区分反馈语义，因此与事项更新路由保持一致——纯跟进人直接放行；
+ * 责任人沿用反馈校验（子任务未签收/超时同样拦截）；其余角色维持「仅责任人」拒绝。
+ */
+export function ensureAttachmentUploadActorAllowed(
+  accessContext: Awaited<ReturnType<typeof getCurrentAccessContext>>,
+  item: any,
+  res: Response,
+): boolean {
+  if (!accessContext?.currentUser || !accessContext.currentRole) {
+    res.status(403).json({ error: '当前账号角色配置异常，请联系管理员' });
+    return false;
+  }
+  const { isOwner, isFollower, hasGlobalPrivilege } = getItemActorFlags(accessContext, item);
+  if (hasGlobalPrivilege) return true;
+  if (isFollower && !isOwner) return true;
+  return ensureItemActorAllowed(accessContext, 'FEEDBACK_ITEM', item, res);
+}
+
 // 获取当前用户可见的事项（权限、分页和时间轴读取均在数据库侧下推）。
 itemsRouter.get('/', async (req: AuthenticatedRequest, res: Response) => {
   try {
