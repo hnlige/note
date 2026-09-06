@@ -262,7 +262,7 @@ const MyItems: React.FC = () => {
       );
     } catch (error) {
       console.error('Upload feedback attachments error:', error);
-      showToast('附件上传失败，请稍后重试', 'error');
+      showToast(error instanceof Error && error.message ? `附件上传失败：${error.message}` : '附件上传失败，请稍后重试', 'error');
       return;
     }
     const effectiveOwnerStatus = getEffectiveStatusForUser(item, currentUser.id);

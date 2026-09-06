@@ -53,7 +53,7 @@ export const CompleteModal: React.FC<CompleteModalProps> = ({ open, onClose, onS
       </div>
 
       <div className="mb-5">
-        <FieldLabel hint="可选，单文件≤25MB">上传证明材料</FieldLabel>
+        <FieldLabel hint="可选，单文件≤10MB">上传证明材料</FieldLabel>
         <AttachmentUpload
           files={files.map(f => ({ name: f.name, size: f.size }))}
           onPick={(list) => list && setFiles(prev => [...prev, ...Array.from(list)])}

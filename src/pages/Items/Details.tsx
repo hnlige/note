@@ -332,7 +332,7 @@ const ItemDetail: React.FC = () => {
       uploadedAttachments = await uploadAttachments(item.id, Array.from(files));
     } catch (error) {
       console.error('Upload feedback attachments error:', error);
-      showToast('附件上传失败，请稍后重试', 'error');
+      showToast(error instanceof Error && error.message ? `附件上传失败：${error.message}` : '附件上传失败，请稍后重试', 'error');
       return;
     }
     const isFollowerFeedback = isFollower && !isOwner;
@@ -349,10 +349,8 @@ const ItemDetail: React.FC = () => {
       attachments: [...(item.attachments || []), ...uploadedAttachments],
       ...(!isFollowerFeedback ? { lastFeedbackDate: todayDateString() } : {}),
     });
-    if (!saved) {
-      showToast('附件上传失败，请稍后重试', 'error');
-      return;
-    }
+    // 附件本身已上传至对象存储；保存失败的具体原因由 store.updateItem 统一提示，避免重复且误导的“附件上传失败”。
+    if (!saved) return;
     setFeedbackFiles([]);
     setAttachments(prev => [...prev, ...uploadedAttachments]);
     addActivity({ content: `${currentUser.name} 为【${item.title}】上传了反馈附件`, type: 'FEEDBACK' });
@@ -366,7 +364,7 @@ const ItemDetail: React.FC = () => {
       feedbackAttachments = await uploadAttachments(item.id, feedbackFiles);
     } catch (error) {
       console.error('Upload feedback attachments error:', error);
-      showToast('附件上传失败，请稍后重试', 'error');
+      showToast(error instanceof Error && error.message ? `附件上传失败：${error.message}` : '附件上传失败，请稍后重试', 'error');
       return;
     }
     const isFollowerFeedback = isFollower && !isOwner;
@@ -390,10 +388,8 @@ const ItemDetail: React.FC = () => {
       ...(feedbackAttachments.length > 0 ? { attachments: [...(item.attachments || []), ...feedbackAttachments] } : {}),
       ...(!isFollowerFeedback ? { lastFeedbackDate: todayDateString() } : {}),
     });
-    if (!saved) {
-      showToast('反馈提交失败，请稍后重试', 'error');
-      return;
-    }
+    // 附件本身已上传至对象存储；保存失败的具体原因由 store.updateItem 统一提示，避免重复且误导的“反馈提交失败”。
+    if (!saved) return;
     addActivity({ content: `${currentUser.name} 提交了【${item.title}】的进度反馈`, type: 'FEEDBACK' });
     setFeedbackText('');
     setFeedbackFiles([]);
