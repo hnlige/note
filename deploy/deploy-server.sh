@@ -382,7 +382,8 @@ server {
     # 附件上传上限 50MB，与后端 getMaxAttachmentBytes 保持一致（覆盖 http 级默认）
     client_max_body_size 50m;
 
-    # 附件上传：50MB 大文件流式转发（不落盘缓冲），读超时与后端附件路由 180s 对齐
+    # 附件上传：50MB 大文件流式转发（不落盘缓冲）；读超时与后端附件路由 300s 对齐
+    # （总耗时 = 客户端上行 + 服务端转存 COS 两段叠加，跨云公网实测 50MB 会超过 180 秒）
     location /api/attachments/ {
         proxy_pass http://127.0.0.1:3001;
         proxy_http_version 1.1;
@@ -393,8 +394,8 @@ server {
 
         proxy_request_buffering off;
         proxy_connect_timeout 10s;
-        proxy_send_timeout 120s;
-        proxy_read_timeout 180s;
+        proxy_send_timeout 150s;
+        proxy_read_timeout 300s;
     }
 
     location /api/ {

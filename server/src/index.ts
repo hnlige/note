@@ -51,7 +51,8 @@ app.use(cors({
 }));
 
 // 全局请求超时（30秒，防止慢请求耗尽资源）；SSE 流式响应不适用（headers 立即发送、连接长驻）；
-// 附件上传按 50MB 上限放宽到 180 秒（慢上行网络下仅接收请求体就可能超过 30 秒）。
+// 附件上传按 50MB 上限放宽到 300 秒：总耗时 = 客户端上行传输 + 服务端转存 COS 两段叠加，
+// 实测跨云公网 50MB 会超过 180 秒。
 app.use((req: import('express').Request, res, next) => {
   if (req.path === '/api/messages/stream') return next();
   const isAttachmentUpload = req.path.startsWith('/api/attachments/');
@@ -59,7 +60,7 @@ app.use((req: import('express').Request, res, next) => {
     if (!res.headersSent) {
       res.status(503).json({ error: '请求超时，请稍后重试' });
     }
-  }, isAttachmentUpload ? 180000 : 30000);
+  }, isAttachmentUpload ? 300000 : 30000);
   res.on('finish', () => clearTimeout(timeout));
   next();
 });
